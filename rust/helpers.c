@@ -36,6 +36,7 @@
 #include <linux/security.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 
@@ -247,6 +248,13 @@ rust_helper_krealloc(const void *objp, size_t new_size, gfp_t flags)
 	return krealloc(objp, new_size, flags);
 }
 EXPORT_SYMBOL_GPL(rust_helper_krealloc);
+
+void * __must_check __realloc_size(2)
+rust_helper_vrealloc(const void *p, size_t size, gfp_t flags)
+{
+	return vrealloc(p, size, flags);
+}
+EXPORT_SYMBOL_GPL(rust_helper_vrealloc);
 
 void rust_helper_rb_link_node(struct rb_node *node, struct rb_node *parent,
 			      struct rb_node **rb_link)
