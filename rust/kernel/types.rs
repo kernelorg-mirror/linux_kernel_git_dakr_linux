@@ -3,7 +3,6 @@
 //! Kernel types.
 
 use crate::init::{self, PinInit};
-use alloc::boxed::Box;
 use core::{
     cell::UnsafeCell,
     marker::{PhantomData, PhantomPinned},
@@ -103,33 +102,6 @@ pub trait ForeignOwnable: Sized {
     /// [`borrow`]: Self::borrow
     /// [`Arc`]: crate::sync::Arc
     unsafe fn borrow_mut<'a>(ptr: *const core::ffi::c_void) -> Self::BorrowedMut<'a>;
-}
-
-impl<T: 'static> ForeignOwnable for Box<T> {
-    type Borrowed<'a> = &'a T;
-    type BorrowedMut<'a> = &'a mut T;
-
-    fn into_foreign(self) -> *const core::ffi::c_void {
-        Box::into_raw(self) as _
-    }
-
-    unsafe fn from_foreign(ptr: *const core::ffi::c_void) -> Self {
-        // SAFETY: The safety requirements of this function ensure that `ptr` comes from a previous
-        // call to `Self::into_foreign`.
-        unsafe { Box::from_raw(ptr as _) }
-    }
-
-    unsafe fn borrow<'a>(ptr: *const core::ffi::c_void) -> &'a T {
-        // SAFETY: The safety requirements of this method ensure that the object remains alive and
-        // immutable for the duration of 'a.
-        unsafe { &*ptr.cast() }
-    }
-
-    unsafe fn borrow_mut<'a>(ptr: *const core::ffi::c_void) -> &'a mut T {
-        // SAFETY: The safety requirements of this method ensure that the pointer is valid and that
-        // nothing else will access the value for the duration of 'a.
-        unsafe { &mut *ptr.cast_mut().cast() }
-    }
 }
 
 impl ForeignOwnable for () {
