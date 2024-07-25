@@ -26,6 +26,7 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/errname.h>
+#include <linux/fs.h>
 #include <linux/gfp.h>
 #include <linux/highmem.h>
 #include <linux/mutex.h>
@@ -206,6 +207,12 @@ void rust_helper_rb_link_node(struct rb_node *node, struct rb_node *parent,
 	rb_link_node(node, parent, rb_link);
 }
 EXPORT_SYMBOL_GPL(rust_helper_rb_link_node);
+
+struct file *rust_helper_get_file(struct file *f)
+{
+	return get_file(f);
+}
+EXPORT_SYMBOL_GPL(rust_helper_get_file);
 
 /*
  * `bindgen` binds the C `size_t` type as the Rust `usize` type, so we can
