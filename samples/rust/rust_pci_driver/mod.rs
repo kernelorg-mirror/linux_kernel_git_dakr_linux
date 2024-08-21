@@ -15,13 +15,13 @@ module! {
 }
 
 struct Module {
-    _reg: pci::Registration<driver::Driver>,
+    _reg: kernel::driver::Registration<pci::Adapter<driver::Driver>>,
 }
 
 impl kernel::Module for Module {
     fn init(name: &'static CStr, module: &'static ThisModule) -> Result<Self> {
         Ok(Module {
-            _reg: pci::Registration::new(name, module)?,
+            _reg: kernel::driver::Registration::new(name, module)?,
         })
     }
 }
