@@ -2,9 +2,8 @@
 
 //! Generic driver support
 
-use core::cell::UnsafeCell;
-use core::marker::PhantomData;
-use kernel::{alloc::flags::*, prelude::*};
+use crate::types::Opaque;
+use kernel::prelude::*;
 
 /// The [`RegistrationOps`] trait serves as generic interface for subsystems (e.g., PCI, Platform,
 /// Amba, etc.) to privide the corresponding subsystem specific implementation to register /
@@ -46,9 +45,10 @@ pub trait RegistrationOps {
 ///
 /// The existance of an instance of this structure implies that the corresponding driver is
 /// currently registered.
+#[pin_data(PinnedDrop)]
 pub struct Registration<T: RegistrationOps> {
-    driver: Pin<KBox<UnsafeCell<T::RegType>>>,
-    _p: PhantomData<T>,
+    #[pin]
+    driver: Opaque<T::RegType>,
 }
 
 impl<T> Registration<T>
@@ -56,25 +56,26 @@ where
     T: RegistrationOps,
 {
     /// Register a new driver from `T::RegType`.
-    pub fn new(name: &'static CStr, module: &'static ThisModule) -> Result<Self> {
-        let driver = KBox::pin(UnsafeCell::new(T::RegType::default()), GFP_KERNEL)?;
+    pub fn new(name: &'static CStr, module: &'static ThisModule) -> impl PinInit<Self, Error> {
+        try_pin_init!(Self {
+            driver <- Opaque::try_ffi_init(|ptr: *mut T::RegType| {
+                // SAFETY: `try_ffi_init` guarantees that `ptr` is valid for write.
+                unsafe { ptr.write(T::RegType::default()) };
 
-        // SAFETY: `driver` has just been initialized; it's only freed after `Self::drop`, which
-        // calls `T::unregister` first.
-        unsafe { T::register(driver.get(), name, module) }?;
-
-        Ok(Self {
-            driver,
-            _p: PhantomData::<T>,
+                // SAFETY: `driver` has just been initialized; `T::unregister` is called on
+                // `Self::drop`.
+                unsafe { T::register(ptr, name, module) }
+            }),
         })
     }
 }
 
-impl<T> Drop for Registration<T>
+#[pinned_drop]
+impl<T> PinnedDrop for Registration<T>
 where
     T: RegistrationOps,
 {
-    fn drop(&mut self) {
+    fn drop(self: Pin<&mut Self>) {
         // SAFETY: Only ever called if the `Registration` was created successfully.
         unsafe { T::unregister(self.driver.get()) };
     }
