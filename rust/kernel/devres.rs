@@ -96,9 +96,16 @@ struct DevresInner<T> {
 pub struct Devres<T>(Arc<DevresInner<T>>);
 
 impl<T> DevresInner<T> {
-    fn new(dev: &Device<Bound>, data: T, flags: Flags) -> Result<Arc<DevresInner<T>>> {
-        let inner = Arc::pin_init(
-            try_pin_init!( DevresInner {
+    fn new<E>(
+        dev: &Device<Bound>,
+        data: impl PinInit<T, E>,
+        flags: Flags,
+    ) -> Result<Arc<DevresInner<T>>>
+    where
+        Error: From<E>,
+    {
+        let inner = Arc::pin_init::<Error>(
+            try_pin_init!( Self {
                 dev: dev.into(),
                 callback: Self::devres_callback,
                 data <- Revocable::new(data),
@@ -168,7 +175,10 @@ impl<T> DevresInner<T> {
 impl<T> Devres<T> {
     /// Creates a new [`Devres`] instance of the given `data`. The `data` encapsulated within the
     /// returned `Devres` instance' `data` will be revoked once the device is detached.
-    pub fn new(dev: &Device<Bound>, data: T, flags: Flags) -> Result<Self> {
+    pub fn new<E>(dev: &Device<Bound>, data: impl PinInit<T, E>, flags: Flags) -> Result<Self>
+    where
+        Error: From<E>,
+    {
         let inner = DevresInner::new(dev, data, flags)?;
 
         Ok(Devres(inner))
@@ -176,7 +186,14 @@ impl<T> Devres<T> {
 
     /// Same as [`Devres::new`], but does not return a `Devres` instance. Instead the given `data`
     /// is owned by devres and will be revoked / dropped, once the device is detached.
-    pub fn new_foreign_owned(dev: &Device<Bound>, data: T, flags: Flags) -> Result {
+    pub fn new_foreign_owned<E>(
+        dev: &Device<Bound>,
+        data: impl PinInit<T, E>,
+        flags: Flags,
+    ) -> Result
+    where
+        Error: From<E>,
+    {
         let _ = DevresInner::new(dev, data, flags)?;
 
         Ok(())
