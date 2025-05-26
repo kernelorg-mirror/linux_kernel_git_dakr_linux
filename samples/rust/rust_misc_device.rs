@@ -198,7 +198,8 @@ impl kernel::InPlaceModule for RustMiscDeviceModule {
         try_pin_init!(Self {
             _miscdev <- MiscDeviceRegistration::register(
                 options,
-                Arc::pin_init(new_mutex!(Inner { value: 0_i32 }), GFP_KERNEL)
+                Arc::pin_init(new_mutex!(Inner { value: 0_i32 }), GFP_KERNEL),
+                None,
             ),
         })
     }
@@ -222,15 +223,15 @@ impl MiscDevice for RustMiscDevice {
 
     type RegistrationData = Arc<Mutex<Inner>>;
 
-    fn open(_file: &File, misc: &MiscDeviceRegistration<Self>) -> Result<Pin<KBox<Self>>> {
-        let dev = ARef::from(misc.device());
+    fn open(_file: &File, misc: &Device, data: &Self::RegistrationData) -> Result<Pin<KBox<Self>>> {
+        let dev = ARef::from(misc);
 
         dev_info!(dev, "Opening Rust Misc Device Sample\n");
 
         KBox::try_pin_init(
             try_pin_init! {
                 RustMiscDevice {
-                    shared: misc.data().clone(),
+                    shared: data.clone(),
                     unique <- new_mutex!(Inner { value: 0_i32 }),
                     dev: dev,
                 }

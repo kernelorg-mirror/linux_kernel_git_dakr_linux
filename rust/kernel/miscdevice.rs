@@ -10,16 +10,17 @@
 
 use crate::{
     bindings, container_of,
-    device::Device,
+    device::{Bound, Device},
+    devres::Devres,
     error::{to_result, Error, Result, VTABLE_DEFAULT_ERROR},
     ffi::{c_int, c_long, c_uint, c_ulong},
     fs::File,
     prelude::*,
     seq_file::SeqFile,
     str::CStr,
-    types::{ForeignOwnable, Opaque},
+    types::{ARef, ForeignOwnable, Opaque},
 };
-use core::{marker::PhantomData, mem::MaybeUninit, pin::Pin};
+use core::{marker::PhantomData, mem::MaybeUninit, pin::Pin, ptr::NonNull};
 
 /// Options for creating a misc device.
 #[derive(Copy, Clone)]
@@ -40,18 +41,101 @@ impl MiscDeviceOptions {
     }
 }
 
-/// A registration of a miscdevice.
-///
 /// # Invariants
 ///
-/// `inner` is a registered misc device.
+/// - `inner` is a registered misc device,
+/// - `data` is valid for the entire lifetime of `Self`.
 #[repr(C)]
 #[pin_data(PinnedDrop)]
-pub struct MiscDeviceRegistration<T: MiscDevice> {
+struct RawDeviceRegistration<T: MiscDevice> {
     #[pin]
     inner: Opaque<bindings::miscdevice>,
+    data: NonNull<T::RegistrationData>,
+    _t: PhantomData<T>,
+}
+
+impl<T: MiscDevice> RawDeviceRegistration<T> {
+    fn new<'a>(
+        opts: MiscDeviceOptions,
+        parent: Option<&'a Device<Bound>>,
+        data: &'a T::RegistrationData,
+    ) -> impl PinInit<Self, Error> + 'a
+    where
+        T: 'a,
+    {
+        try_pin_init!(Self {
+            // INVARIANT: `Self` is always embedded in a `MiscDeviceRegistration<T>`, hence `data`
+            // is guaranteed to be valid for the entire lifetime of `Self`.
+            data: NonNull::from(data),
+            inner <- Opaque::try_ffi_init(move |slot: *mut bindings::miscdevice| {
+                let mut value = opts.into_raw::<T>();
+
+                if let Some(parent) = parent {
+                    // The device core code will take care to take a reference of `parent` in
+                    // `device_add()` called by `misc_register()`.
+                    value.parent = parent.as_raw();
+                }
+
+                // SAFETY: The initializer can write to the provided `slot`.
+                unsafe { slot.write(value) };
+
+                // SAFETY:
+                // * We just wrote the misc device options to the slot. The miscdevice will
+                //   get unregistered before `slot` is deallocated because the memory is pinned and
+                //   the destructor of this type deallocates the memory.
+                // * `data` is Initialized before `misc_register` so no race with `fops->open()`
+                //   is possible.
+                // INVARIANT: If this returns `Ok(())`, then the `slot` will contain a registered
+                // misc device.
+                to_result(unsafe { bindings::misc_register(slot) })
+            }),
+            _t: PhantomData,
+        })
+    }
+
+    /// Returns a raw pointer to the misc device.
+    fn as_raw(&self) -> *mut bindings::miscdevice {
+        self.inner.get()
+    }
+
+    /// Access the `this_device` field.
+    fn device(&self) -> &Device {
+        // SAFETY: This can only be called after a successful register(), which always
+        // initialises `this_device` with a valid device. Furthermore, the signature of this
+        // function tells the borrow-checker that the `&Device` reference must not outlive the
+        // `&MiscDeviceRegistration<T>` used to obtain it, so the last use of the reference must be
+        // before the underlying `struct miscdevice` is destroyed.
+        unsafe { Device::as_ref((*self.as_raw()).this_device) }
+    }
+
+    fn data(&self) -> &T::RegistrationData {
+        // SAFETY: The type invariant guarantees that `data` is valid for the entire lifetime of
+        // `Self`.
+        unsafe { self.data.as_ref() }
+    }
+}
+
+#[pinned_drop]
+impl<T: MiscDevice> PinnedDrop for RawDeviceRegistration<T> {
+    fn drop(self: Pin<&mut Self>) {
+        // SAFETY: We know that the device is registered by the type invariants.
+        unsafe { bindings::misc_deregister(self.inner.get()) };
+    }
+}
+
+#[expect(dead_code)]
+enum DeviceRegistrationInner<T: MiscDevice> {
+    Raw(Pin<KBox<RawDeviceRegistration<T>>>),
+    Managed(Devres<RawDeviceRegistration<T>>),
+}
+
+/// A registration of a miscdevice.
+#[pin_data(PinnedDrop)]
+pub struct MiscDeviceRegistration<T: MiscDevice> {
+    inner: DeviceRegistrationInner<T>,
     #[pin]
     data: Opaque<T::RegistrationData>,
+    this_device: ARef<Device>,
     _t: PhantomData<T>,
 }
 
@@ -69,43 +153,61 @@ unsafe impl<T: MiscDevice> Sync for MiscDeviceRegistration<T> {}
 
 impl<T: MiscDevice> MiscDeviceRegistration<T> {
     /// Register a misc device.
-    pub fn register(
+    pub fn register<'a>(
         opts: MiscDeviceOptions,
-        data: impl PinInit<T::RegistrationData, Error>,
-    ) -> impl PinInit<Self, Error> {
-        try_pin_init!(Self {
-            data <- Opaque::pin_init(data),
-            inner <- Opaque::try_ffi_init(move |slot: *mut bindings::miscdevice| {
-                // SAFETY: The initializer can write to the provided `slot`.
-                unsafe { slot.write(opts.into_raw::<T>()) };
+        data: impl PinInit<T::RegistrationData, Error> + 'a,
+        parent: Option<&'a Device<Bound>>,
+    ) -> impl PinInit<Self, Error> + 'a
+    where
+        T: 'a,
+    {
+        let mut dev: Option<ARef<Device>> = None;
 
+        try_pin_init!(&this in Self {
+            data <- Opaque::pin_init(data),
+            // TODO: make `inner` in-place when enums get supported by pin-init.
+            //
+            // Link: https://github.com/Rust-for-Linux/pin-init/issues/59
+            inner: {
                 // SAFETY:
-                // * We just wrote the misc device options to the slot. The miscdevice will
-                //   get unregistered before `slot` is deallocated because the memory is pinned and
-                //   the destructor of this type deallocates the memory.
-                // * `data` is Initialized before `misc_register` so no race with `fops->open()`
-                //   is possible.
-                // INVARIANT: If this returns `Ok(())`, then the `slot` will contain a registered
-                // misc device.
-                to_result(unsafe { bindings::misc_register(slot) })
-            }),
+                //   - `this` is a valid pointer to `Self`,
+                //   - `data` was properly initialized above.
+                let data = unsafe { &*(*this.as_ptr()).data.get() };
+
+                let raw = RawDeviceRegistration::new(opts, parent, data);
+
+                // FIXME: Work around a bug in rustc, to prevent the following warning:
+                //
+                //   "warning: value captured by `dev` is never read."
+                //
+                // Link: https://github.com/rust-lang/rust/issues/141615
+                let _ = dev;
+
+                if let Some(parent) = parent {
+                    let devres = Devres::new(parent, raw, GFP_KERNEL)?;
+
+                    dev = Some(devres.access(parent)?.device().into());
+                    DeviceRegistrationInner::Managed(devres)
+                } else {
+                    let boxed = KBox::pin_init(raw, GFP_KERNEL)?;
+
+                    dev = Some(boxed.device().into());
+                    DeviceRegistrationInner::Raw(boxed)
+                }
+            },
+            // Cache `this_device` within `Self` to avoid having to access `Devres` in the managed
+            // case.
+            this_device: {
+                // SAFETY: `dev` is guaranteed to be set in the initializer of `inner` above.
+                unsafe { dev.unwrap_unchecked() }
+            },
             _t: PhantomData,
         })
     }
 
-    /// Returns a raw pointer to the misc device.
-    pub fn as_raw(&self) -> *mut bindings::miscdevice {
-        self.inner.get()
-    }
-
     /// Access the `this_device` field.
     pub fn device(&self) -> &Device {
-        // SAFETY: This can only be called after a successful register(), which always
-        // initialises `this_device` with a valid device. Furthermore, the signature of this
-        // function tells the borrow-checker that the `&Device` reference must not outlive the
-        // `&MiscDeviceRegistration<T>` used to obtain it, so the last use of the reference must be
-        // before the underlying `struct miscdevice` is destroyed.
-        unsafe { Device::as_ref((*self.as_raw()).this_device) }
+        &self.this_device
     }
 
     /// Access the additional data stored in this registration.
@@ -120,9 +222,6 @@ impl<T: MiscDevice> MiscDeviceRegistration<T> {
 #[pinned_drop]
 impl<T: MiscDevice> PinnedDrop for MiscDeviceRegistration<T> {
     fn drop(self: Pin<&mut Self>) {
-        // SAFETY: We know that the device is registered by the type invariants.
-        unsafe { bindings::misc_deregister(self.inner.get()) };
-
         // SAFETY: `self.data` is valid for dropping.
         unsafe { core::ptr::drop_in_place(self.data.get()) };
     }
@@ -137,14 +236,13 @@ pub trait MiscDevice: Sized {
     /// The additional data carried by the [`MiscDeviceRegistration`] for this [`MiscDevice`].
     /// If no additional data is required than the unit type `()` should be used.
     ///
-    /// This data can be accessed in [`MiscDevice::open()`] using
-    /// [`MiscDeviceRegistration::data()`].
+    /// This data can be accessed in [`MiscDevice::open()`].
     type RegistrationData: Sync;
 
     /// Called when the misc device is opened.
     ///
     /// The returned pointer will be stored as the private data for the file.
-    fn open(_file: &File, _misc: &MiscDeviceRegistration<Self>) -> Result<Self::Ptr>;
+    fn open(_file: &File, _misc: &Device, _data: &Self::RegistrationData) -> Result<Self::Ptr>;
 
     /// Called when the misc device is released.
     fn release(device: Self::Ptr, _file: &File) {
@@ -217,17 +315,17 @@ impl<T: MiscDevice> MiscdeviceVTable<T> {
         // SAFETY:
         // * `misc_open()` ensures that the `struct miscdevice` can't be unregistered and freed
         //   during this call to `fops_open`.
-        // * The `misc_ptr` always points to the `inner` field of a `MiscDeviceRegistration<T>`.
-        // * The `MiscDeviceRegistration<T>` is valid until the `struct miscdevice` was
+        // * The `misc_ptr` always points to the `inner` field of a `RawDeviceRegistration<T>`.
+        // * The `RawDeviceRegistration<T>` is valid until the `struct miscdevice` was
         //   unregistered.
-        let registration = unsafe { &*container_of!(misc_ptr, MiscDeviceRegistration<T>, inner) };
+        let registration = unsafe { &*container_of!(misc_ptr, RawDeviceRegistration<T>, inner) };
 
         // SAFETY:
         // * This underlying file is valid for (much longer than) the duration of `T::open`.
         // * There is no active fdget_pos region on the file on this thread.
         let file = unsafe { File::from_raw_file(raw_file) };
 
-        let ptr = match T::open(file, registration) {
+        let ptr = match T::open(file, registration.device(), registration.data()) {
             Ok(ptr) => ptr,
             Err(err) => return err.to_errno(),
         };
