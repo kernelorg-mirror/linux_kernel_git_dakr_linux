@@ -354,13 +354,13 @@ impl<T> Opaque<T> {
     }
 
     /// Create an opaque pin-initializer from the given pin-initializer.
-    pub fn pin_init(slot: impl PinInit<T>) -> impl PinInit<Self> {
-        Self::ffi_init(|ptr: *mut T| {
+    pub fn pin_init<E>(slot: impl PinInit<T, E>) -> impl PinInit<Self, E> {
+        Self::try_ffi_init(|ptr: *mut T| -> Result<(), E> {
             // SAFETY:
             //   - `ptr` is a valid pointer to uninitialized memory,
-            //   - `slot` is not accessed on error; the call is infallible,
+            //   - `slot` is not accessed on error,
             //   - `slot` is pinned in memory.
-            let _ = unsafe { PinInit::<T>::__pinned_init(slot, ptr) };
+            unsafe { PinInit::<T, E>::__pinned_init(slot, ptr) }
         })
     }
 
