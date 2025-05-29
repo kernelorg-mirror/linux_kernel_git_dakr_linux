@@ -30,6 +30,14 @@ config SAMPLE_RUST_MISC_DEVICE
 
 	  If unsure, say N.
 
+config SAMPLE_RUST_MISC_DEVICE_WITH_PARENT
+	bool "Create a misc device with a parent device"
+	depends on SAMPLE_RUST_MISC_DEVICE
+	default n
+	help
+	  Say Y here if you want the misc device sample to create a misc
+	  device with a parent device.
+
 config SAMPLE_RUST_PRINT
 	tristate "Printing macros"
 	help

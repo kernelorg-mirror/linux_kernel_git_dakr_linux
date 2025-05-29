@@ -167,6 +167,9 @@ use kernel::{
     uaccess::{UserSlice, UserSliceReader, UserSliceWriter},
 };
 
+#[cfg(CONFIG_SAMPLE_RUST_MISC_DEVICE_WITH_PARENT)]
+use kernel::faux;
+
 const RUST_MISC_DEV_HELLO: u32 = _IO('|' as u32, 0x80);
 const RUST_MISC_DEV_GET_VALUE: u32 = _IOR::<i32>('|' as u32, 0x81);
 const RUST_MISC_DEV_SET_VALUE: u32 = _IOW::<i32>('|' as u32, 0x82);
@@ -181,19 +184,33 @@ module! {
     license: "GPL",
 }
 
+#[cfg(not(CONFIG_SAMPLE_RUST_MISC_DEVICE_WITH_PARENT))]
 #[pin_data]
 struct RustMiscDeviceModule {
     #[pin]
     _miscdev: MiscDeviceRegistration<RustMiscDevice>,
 }
 
-impl kernel::InPlaceModule for RustMiscDeviceModule {
-    fn init(_module: &'static ThisModule) -> impl PinInit<Self, Error> {
+#[cfg(CONFIG_SAMPLE_RUST_MISC_DEVICE_WITH_PARENT)]
+struct RustMiscDeviceModule {
+    _faux: faux::Registration,
+    _miscdev: Pin<KBox<MiscDeviceRegistration<RustMiscDevice>>>,
+}
+
+impl RustMiscDeviceModule {
+    fn init() -> MiscDeviceOptions {
         pr_info!("Initializing Rust Misc Device Sample\n");
 
-        let options = MiscDeviceOptions {
+        MiscDeviceOptions {
             name: c_str!("rust-misc-device"),
-        };
+        }
+    }
+}
+
+#[cfg(not(CONFIG_SAMPLE_RUST_MISC_DEVICE_WITH_PARENT))]
+impl kernel::InPlaceModule for RustMiscDeviceModule {
+    fn init(_module: &'static ThisModule) -> impl PinInit<Self, Error> {
+        let options = Self::init();
 
         try_pin_init!(Self {
             _miscdev <- MiscDeviceRegistration::register(
@@ -201,6 +218,31 @@ impl kernel::InPlaceModule for RustMiscDeviceModule {
                 Arc::pin_init(new_mutex!(Inner { value: 0_i32 }), GFP_KERNEL),
                 None,
             ),
+        })
+    }
+}
+
+#[cfg(CONFIG_SAMPLE_RUST_MISC_DEVICE_WITH_PARENT)]
+impl kernel::Module for RustMiscDeviceModule {
+    fn init(_module: &'static ThisModule) -> Result<Self> {
+        let options = Self::init();
+        let faux = faux::Registration::new(c_str!("rust-misc-device-sample"), None)?;
+
+        // For every other bus, this would be called from Driver::probe(), which would return a
+        // `Result<Pin<KBox<T>>>`, but faux always binds to a "dummy" driver, hence probe() is
+        // not required.
+        let misc = KBox::pin_init(
+            MiscDeviceRegistration::register(
+                options,
+                Arc::pin_init(new_mutex!(Inner { value: 0_i32 }), GFP_KERNEL),
+                Some(faux.as_ref()),
+            ),
+            GFP_KERNEL,
+        )?;
+
+        Ok(Self {
+            _faux: faux,
+            _miscdev: misc,
         })
     }
 }
