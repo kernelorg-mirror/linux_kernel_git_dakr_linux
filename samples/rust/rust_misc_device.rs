@@ -159,7 +159,7 @@ use kernel::{
     device::Device,
     fs::File,
     ioctl::{_IO, _IOC_SIZE, _IOR, _IOW},
-    miscdevice::{MiscDevice, MiscDeviceOptions, MiscDeviceRegistration},
+    miscdevice::{MiscArgs, MiscDevice, MiscDeviceOptions, MiscDeviceRegistration},
     new_mutex,
     prelude::*,
     sync::{Arc, Mutex},
@@ -223,15 +223,15 @@ impl MiscDevice for RustMiscDevice {
 
     type RegistrationData = Arc<Mutex<Inner>>;
 
-    fn open(_file: &File, misc: &Device, data: &Self::RegistrationData) -> Result<Pin<KBox<Self>>> {
-        let dev = ARef::from(misc);
+    fn open(_file: &File, args: MiscArgs<'_, Self>) -> Result<Pin<KBox<Self>>> {
+        let dev = ARef::from(args.device);
 
         dev_info!(dev, "Opening Rust Misc Device Sample\n");
 
         KBox::try_pin_init(
             try_pin_init! {
                 RustMiscDevice {
-                    shared: data.clone(),
+                    shared: args.data.clone(),
                     unique <- new_mutex!(Inner { value: 0_i32 }),
                     dev: dev,
                 }
@@ -240,8 +240,14 @@ impl MiscDevice for RustMiscDevice {
         )
     }
 
-    fn ioctl(me: Pin<&RustMiscDevice>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
-        dev_info!(me.dev, "IOCTLing Rust Misc Device Sample\n");
+    fn ioctl(
+        args: MiscArgs<'_, Self>,
+        me: &Self::Ptr,
+        _file: &File,
+        cmd: u32,
+        arg: usize,
+    ) -> Result<isize> {
+        dev_info!(args.device, "IOCTLing Rust Misc Device Sample\n");
 
         let size = _IOC_SIZE(cmd);
 
@@ -256,7 +262,7 @@ impl MiscDevice for RustMiscDevice {
             }
             RUST_MISC_DEV_HELLO => me.hello()?,
             _ => {
-                dev_err!(me.dev, "-> IOCTL not recognised: {}\n", cmd);
+                dev_err!(args.device, "-> IOCTL not recognised: {}\n", cmd);
                 return Err(ENOTTY);
             }
         };
