@@ -643,7 +643,7 @@ struct device {
 	u32			id;	/* device instance */
 
 	spinlock_t		devres_lock;
-	struct list_head	devres_head;
+	struct list_head	devres_head[DEVRES_STAGE_MAX];
 
 	const struct class	*class;
 	const struct attribute_group **groups;	/* optional groups */

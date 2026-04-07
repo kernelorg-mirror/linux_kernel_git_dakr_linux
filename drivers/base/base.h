@@ -12,6 +12,10 @@
  */
 #include <linux/notifier.h>
 
+/* Helper for iterating over devres stages */
+#define devres_for_each_stage(stage) \
+	for (stage = DEVRES_STAGE_REGISTRATION; stage < DEVRES_STAGE_MAX; stage++)
+
 /**
  * struct subsys_private - structure to hold the private to the driver core
  *			   portions of the bus_type/class structure.
@@ -230,6 +234,8 @@ struct devres_node {
 
 void devres_node_init(struct devres_node *node, dr_node_release_t release,
 		      dr_node_free_t free_node);
+void devres_node_add_stage(struct device *dev, struct devres_node *node,
+			   enum devres_stage stage);
 void devres_node_add(struct device *dev, struct devres_node *node);
 bool devres_node_remove(struct device *dev, struct devres_node *node);
 void devres_set_node_dbginfo(struct devres_node *node, const char *name,
@@ -238,6 +244,10 @@ void devres_for_each_res(struct device *dev, dr_release_t release,
 			 dr_match_t match, void *match_data,
 			 void (*fn)(struct device *, void *, void *),
 			 void *data);
+void devres_for_each_res_stage(struct device *dev, dr_release_t release,
+			       dr_match_t match, void *match_data,
+			       void (*fn)(struct device *, void *, void *),
+			       void *data, enum devres_stage stage);
 int devres_release_all(struct device *dev);
 void device_block_probing(void);
 void device_unblock_probing(void);

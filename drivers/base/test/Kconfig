@@ -18,3 +18,13 @@ config DRIVER_PE_KUNIT_TEST
 	tristate "KUnit Tests for property entry API" if !KUNIT_ALL_TESTS
 	depends on KUNIT
 	default KUNIT_ALL_TESTS
+
+config DEVRES_STAGE_KUNIT_TEST
+	tristate "KUnit Tests for multi-stage devres" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test multi-stage devres functionality including stage ordering,
+	  multi-stage groups, and backwards compatibility.
+
+	  If unsure, say N.

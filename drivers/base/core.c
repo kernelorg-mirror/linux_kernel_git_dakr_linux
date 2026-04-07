@@ -3164,7 +3164,12 @@ void device_initialize(struct device *dev)
 	spin_lock_init(&dev->driver_override.lock);
 	lockdep_set_novalidate_class(&dev->mutex);
 	spin_lock_init(&dev->devres_lock);
-	INIT_LIST_HEAD(&dev->devres_head);
+	{
+		enum devres_stage stage;
+
+		devres_for_each_stage(stage)
+			INIT_LIST_HEAD(&dev->devres_head[stage]);
+	}
 	device_pm_init(dev);
 	set_dev_node(dev, NUMA_NO_NODE);
 	INIT_LIST_HEAD(&dev->links.consumers);

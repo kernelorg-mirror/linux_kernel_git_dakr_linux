@@ -674,10 +674,21 @@ static int really_probe(struct device *dev, const struct device_driver *drv)
 
 	dev_dbg(dev, "bus: '%s': %s: probing driver %s with device\n",
 		drv->bus->name, __func__, drv->name);
-	if (!list_empty(&dev->devres_head)) {
-		dev_crit(dev, "Resources present before probing\n");
-		ret = -EBUSY;
-		goto done;
+	{
+		enum devres_stage stage;
+		bool has_resources = false;
+
+		devres_for_each_stage(stage) {
+			if (!list_empty(&dev->devres_head[stage])) {
+				has_resources = true;
+				break;
+			}
+		}
+		if (has_resources) {
+			dev_crit(dev, "Resources present before probing\n");
+			ret = -EBUSY;
+			goto done;
+		}
 	}
 
 re_probe:

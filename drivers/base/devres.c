@@ -151,11 +151,12 @@ static __always_inline struct devres *alloc_dr(dr_release_t release,
 	return dr;
 }
 
-static void add_dr(struct device *dev, struct devres_node *node)
+static void add_dr(struct device *dev, struct devres_node *node,
+		   enum devres_stage stage)
 {
 	devres_log(dev, node, "ADD");
 	BUG_ON(!list_empty(&node->entry));
-	list_add_tail(&node->entry, &dev->devres_head);
+	list_add_tail(&node->entry, &dev->devres_head[stage]);
 }
 
 static void replace_dr(struct device *dev,
@@ -195,24 +196,25 @@ void *__devres_alloc_node(dr_release_t release, size_t size, gfp_t gfp, int nid,
 EXPORT_SYMBOL_GPL(__devres_alloc_node);
 
 /**
- * devres_for_each_res - Resource iterator
+ * devres_for_each_res_stage - Resource iterator for a specific stage
  * @dev: Device to iterate resource from
  * @release: Look for resources associated with this release function
  * @match: Match function (optional)
  * @match_data: Data for the match function
  * @fn: Function to be called for each matched resource.
  * @data: Data for @fn, the 3rd parameter of @fn
+ * @stage: Stage to iterate over
  *
- * Call @fn for each devres of @dev which is associated with @release
- * and for which @match returns 1.
+ * Call @fn for each devres of @dev in the specified @stage which is
+ * associated with @release and for which @match returns 1.
  *
  * RETURNS:
  * 	void
  */
-void devres_for_each_res(struct device *dev, dr_release_t release,
-			dr_match_t match, void *match_data,
-			void (*fn)(struct device *, void *, void *),
-			void *data)
+void devres_for_each_res_stage(struct device *dev, dr_release_t release,
+			       dr_match_t match, void *match_data,
+			       void (*fn)(struct device *, void *, void *),
+			       void *data, enum devres_stage stage)
 {
 	struct devres_node *node;
 	struct devres_node *tmp;
@@ -222,7 +224,7 @@ void devres_for_each_res(struct device *dev, dr_release_t release,
 
 	guard(spinlock_irqsave)(&dev->devres_lock);
 	list_for_each_entry_safe_reverse(node, tmp,
-			&dev->devres_head, entry) {
+			&dev->devres_head[stage], entry) {
 		struct devres *dr = container_of(node, struct devres, node);
 
 		if (node->release != dr_node_release)
@@ -233,6 +235,38 @@ void devres_for_each_res(struct device *dev, dr_release_t release,
 			continue;
 		fn(dev, dr->data, data);
 	}
+}
+EXPORT_SYMBOL_GPL(devres_for_each_res_stage);
+
+/**
+ * devres_for_each_res - Resource iterator across all stages
+ * @dev: Device to iterate resource from
+ * @release: Look for resources associated with this release function
+ * @match: Match function (optional)
+ * @match_data: Data for the match function
+ * @fn: Function to be called for each matched resource.
+ * @data: Data for @fn, the 3rd parameter of @fn
+ *
+ * Call @fn for each devres of @dev across all stages which is associated
+ * with @release and for which @match returns 1. Iterates stages in order:
+ * REGISTRATION → DATA.
+ *
+ * RETURNS:
+ * 	void
+ */
+void devres_for_each_res(struct device *dev, dr_release_t release,
+			dr_match_t match, void *match_data,
+			void (*fn)(struct device *, void *, void *),
+			void *data)
+{
+	enum devres_stage stage;
+
+	if (!fn)
+		return;
+
+	devres_for_each_stage(stage)
+		devres_for_each_res_stage(dev, release, match, match_data,
+					  fn, data, stage);
 }
 EXPORT_SYMBOL_GPL(devres_for_each_res);
 
@@ -258,12 +292,58 @@ void devres_free(void *res)
 }
 EXPORT_SYMBOL_GPL(devres_free);
 
-void devres_node_add(struct device *dev, struct devres_node *node)
+void devres_node_add_stage(struct device *dev, struct devres_node *node,
+			   enum devres_stage stage)
 {
 	guard(spinlock_irqsave)(&dev->devres_lock);
 
-	add_dr(dev, node);
+	add_dr(dev, node, stage);
 }
+
+void devres_node_add(struct device *dev, struct devres_node *node)
+{
+	devres_node_add_stage(dev, node, DEVRES_STAGE_DATA);
+}
+
+bool devres_node_remove(struct device *dev, struct devres_node *node)
+{
+	struct devres_node *__node;
+	enum devres_stage stage;
+
+	guard(spinlock_irqsave)(&dev->devres_lock);
+	devres_for_each_stage(stage) {
+		list_for_each_entry_reverse(__node,
+					    &dev->devres_head[stage], entry) {
+			if (__node == node) {
+				list_del_init(&node->entry);
+				devres_log(dev, node, "REM");
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * devres_add_stage - Register device resource to a specific stage
+ * @dev: Device to add resource to
+ * @res: Resource to register
+ * @stage: Stage to add resource to
+ *
+ * Register devres @res to @dev in the specified @stage.  @res should have
+ * been allocated using devres_alloc().  On driver detach, the associated
+ * release function will be invoked and devres will be freed automatically.
+ */
+void devres_add_stage(struct device *dev, void *res, enum devres_stage stage)
+{
+	struct devres *dr = container_of(res, struct devres, data);
+
+	guard(spinlock_irqsave)(&dev->devres_lock);
+
+	add_dr(dev, &dr->node, stage);
+}
+EXPORT_SYMBOL_GPL(devres_add_stage);
 
 /**
  * devres_add - Register device resource
@@ -276,18 +356,17 @@ void devres_node_add(struct device *dev, struct devres_node *node)
  */
 void devres_add(struct device *dev, void *res)
 {
-	struct devres *dr = container_of(res, struct devres, data);
-
-	devres_node_add(dev, &dr->node);
+	devres_add_stage(dev, res, DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devres_add);
 
 static struct devres *find_dr(struct device *dev, dr_release_t release,
-			      dr_match_t match, void *match_data)
+			      dr_match_t match, void *match_data,
+			      enum devres_stage stage)
 {
 	struct devres_node *node;
 
-	list_for_each_entry_reverse(node, &dev->devres_head, entry) {
+	list_for_each_entry_reverse(node, &dev->devres_head[stage], entry) {
 		struct devres *dr = container_of(node, struct devres, node);
 
 		if (node->release != dr_node_release)
@@ -301,6 +380,37 @@ static struct devres *find_dr(struct device *dev, dr_release_t release,
 
 	return NULL;
 }
+
+/**
+ * devres_find_stage - Find device resource in a specific stage
+ * @dev: Device to lookup resource from
+ * @release: Look for resources associated with this release function
+ * @match: Match function (optional)
+ * @match_data: Data for the match function
+ * @stage: Stage to search in
+ *
+ * Find the latest devres of @dev in the specified @stage which is associated
+ * with @release and for which @match returns 1.  If @match is NULL, it's
+ * considered to match all.
+ *
+ * RETURNS:
+ * Pointer to found devres, NULL if not found.
+ */
+void *devres_find_stage(struct device *dev, dr_release_t release,
+			dr_match_t match, void *match_data,
+			enum devres_stage stage)
+{
+	struct devres *dr;
+
+	guard(spinlock_irqsave)(&dev->devres_lock);
+
+	dr = find_dr(dev, release, match, match_data, stage);
+	if (dr)
+		return dr->data;
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(devres_find_stage);
 
 /**
  * devres_find - Find device resource
@@ -319,16 +429,47 @@ static struct devres *find_dr(struct device *dev, dr_release_t release,
 void *devres_find(struct device *dev, dr_release_t release,
 		  dr_match_t match, void *match_data)
 {
-	struct devres *dr;
-
-	guard(spinlock_irqsave)(&dev->devres_lock);
-	dr = find_dr(dev, release, match, match_data);
-	if (dr)
-		return dr->data;
-
-	return NULL;
+	return devres_find_stage(dev, release, match, match_data,
+				 DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devres_find);
+
+/**
+ * devres_get_stage - Find devres in a stage, if non-existent, add one atomically
+ * @dev: Device to lookup or add devres for
+ * @new_res: Pointer to new initialized devres to add if not found
+ * @match: Match function (optional)
+ * @match_data: Data for the match function
+ * @stage: Stage to search in and add to if not found
+ *
+ * Find the latest devres of @dev in the specified @stage which has the same
+ * release function as @new_res and for which @match return 1.  If found,
+ * @new_res is freed; otherwise, @new_res is added atomically to @stage.
+ *
+ * RETURNS:
+ * Pointer to found or added devres.
+ */
+void *devres_get_stage(struct device *dev, void *new_res,
+		       dr_match_t match, void *match_data,
+		       enum devres_stage stage)
+{
+	struct devres *new_dr = container_of(new_res, struct devres, data);
+	struct devres *dr;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dev->devres_lock, flags);
+	dr = find_dr(dev, new_dr->release, match, match_data, stage);
+	if (!dr) {
+		add_dr(dev, &new_dr->node, stage);
+		dr = new_dr;
+		new_res = NULL;
+	}
+	spin_unlock_irqrestore(&dev->devres_lock, flags);
+	devres_free(new_res);
+
+	return dr->data;
+}
+EXPORT_SYMBOL_GPL(devres_get_stage);
 
 /**
  * devres_get - Find devres, if non-existent, add one atomically
@@ -347,39 +488,45 @@ EXPORT_SYMBOL_GPL(devres_find);
 void *devres_get(struct device *dev, void *new_res,
 		 dr_match_t match, void *match_data)
 {
-	struct devres *new_dr = container_of(new_res, struct devres, data);
-	struct devres *dr;
-	unsigned long flags;
-
-	spin_lock_irqsave(&dev->devres_lock, flags);
-	dr = find_dr(dev, new_dr->release, match, match_data);
-	if (!dr) {
-		add_dr(dev, &new_dr->node);
-		dr = new_dr;
-		new_res = NULL;
-	}
-	spin_unlock_irqrestore(&dev->devres_lock, flags);
-	devres_free(new_res);
-
-	return dr->data;
+	return devres_get_stage(dev, new_res, match, match_data,
+				DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devres_get);
 
-bool devres_node_remove(struct device *dev, struct devres_node *node)
+/**
+ * devres_remove_stage - Find a device resource in a stage and remove it
+ * @dev: Device to find resource from
+ * @release: Look for resources associated with this release function
+ * @match: Match function (optional)
+ * @match_data: Data for the match function
+ * @stage: Stage to search in
+ *
+ * Find the latest devres of @dev in the specified @stage associated with
+ * @release and for which @match returns 1.  If @match is NULL, it's
+ * considered to match all.  If found, the resource is removed atomically
+ * and returned.
+ *
+ * RETURNS:
+ * Pointer to removed devres on success, NULL if not found.
+ */
+void *devres_remove_stage(struct device *dev, dr_release_t release,
+			  dr_match_t match, void *match_data,
+			  enum devres_stage stage)
 {
-	struct devres_node *__node;
+	struct devres *dr;
 
 	guard(spinlock_irqsave)(&dev->devres_lock);
-	list_for_each_entry_reverse(__node, &dev->devres_head, entry) {
-		if (__node == node) {
-			list_del_init(&node->entry);
-			devres_log(dev, node, "REM");
-			return true;
-		}
+
+	dr = find_dr(dev, release, match, match_data, stage);
+	if (dr) {
+		list_del_init(&dr->node.entry);
+		devres_log(dev, &dr->node, "REM");
+		return dr->data;
 	}
 
-	return false;
+	return NULL;
 }
+EXPORT_SYMBOL_GPL(devres_remove_stage);
 
 /**
  * devres_remove - Find a device resource and remove it
@@ -399,19 +546,45 @@ bool devres_node_remove(struct device *dev, struct devres_node *node)
 void *devres_remove(struct device *dev, dr_release_t release,
 		    dr_match_t match, void *match_data)
 {
-	struct devres *dr;
-
-	guard(spinlock_irqsave)(&dev->devres_lock);
-	dr = find_dr(dev, release, match, match_data);
-	if (dr) {
-		list_del_init(&dr->node.entry);
-		devres_log(dev, &dr->node, "REM");
-		return dr->data;
-	}
-
-	return NULL;
+	return devres_remove_stage(dev, release, match, match_data,
+				   DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devres_remove);
+
+/**
+ * devres_destroy_stage - Find a device resource in a stage and destroy it
+ * @dev: Device to find resource from
+ * @release: Look for resources associated with this release function
+ * @match: Match function (optional)
+ * @match_data: Data for the match function
+ * @stage: Stage to search in
+ *
+ * Find the latest devres of @dev in the specified @stage associated with
+ * @release and for which @match returns 1.  If @match is NULL, it's
+ * considered to match all.  If found, the resource is removed atomically
+ * and freed.
+ *
+ * Note that the release function for the resource will not be called,
+ * only the devres-allocated data will be freed.  The caller becomes
+ * responsible for freeing any other data.
+ *
+ * RETURNS:
+ * 0 if devres is found and freed, -ENOENT if not found.
+ */
+int devres_destroy_stage(struct device *dev, dr_release_t release,
+			 dr_match_t match, void *match_data,
+			 enum devres_stage stage)
+{
+	void *res;
+
+	res = devres_remove_stage(dev, release, match, match_data, stage);
+	if (unlikely(!res))
+		return -ENOENT;
+
+	devres_free(res);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(devres_destroy_stage);
 
 /**
  * devres_destroy - Find a device resource and destroy it
@@ -434,17 +607,43 @@ EXPORT_SYMBOL_GPL(devres_remove);
 int devres_destroy(struct device *dev, dr_release_t release,
 		   dr_match_t match, void *match_data)
 {
-	void *res;
-
-	res = devres_remove(dev, release, match, match_data);
-	if (unlikely(!res))
-		return -ENOENT;
-
-	devres_free(res);
-	return 0;
+	return devres_destroy_stage(dev, release, match, match_data,
+				    DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devres_destroy);
 
+
+/**
+ * devres_release_stage - Find a device resource in a stage and destroy it, calling release
+ * @dev: Device to find resource from
+ * @release: Look for resources associated with this release function
+ * @match: Match function (optional)
+ * @match_data: Data for the match function
+ * @stage: Stage to search in
+ *
+ * Find the latest devres of @dev in the specified @stage associated with
+ * @release and for which @match returns 1.  If @match is NULL, it's
+ * considered to match all.  If found, the resource is removed atomically,
+ * the release function called and the resource freed.
+ *
+ * RETURNS:
+ * 0 if devres is found and freed, -ENOENT if not found.
+ */
+int devres_release_stage(struct device *dev, dr_release_t release,
+			 dr_match_t match, void *match_data,
+			 enum devres_stage stage)
+{
+	void *res;
+
+	res = devres_remove_stage(dev, release, match, match_data, stage);
+	if (unlikely(!res))
+		return -ENOENT;
+
+	(*release)(dev, res);
+	devres_free(res);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(devres_release_stage);
 
 /**
  * devres_release - Find a device resource and destroy it, calling release
@@ -464,15 +663,8 @@ EXPORT_SYMBOL_GPL(devres_destroy);
 int devres_release(struct device *dev, dr_release_t release,
 		   dr_match_t match, void *match_data)
 {
-	void *res;
-
-	res = devres_remove(dev, release, match, match_data);
-	if (unlikely(!res))
-		return -ENOENT;
-
-	(*release)(dev, res);
-	devres_free(res);
-	return 0;
+	return devres_release_stage(dev, release, match, match_data,
+				    DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devres_release);
 
@@ -553,28 +745,42 @@ static void release_nodes(struct device *dev, struct list_head *todo)
  * @dev: Device to release resources for
  *
  * Release all resources associated with @dev.  This function is
- * called on driver detach.
+ * called on driver detach and device removal. Releases stages in order:
+ * REGISTRATION → DATA to ensure proper cleanup ordering.
+ *
+ * Returns total count of released resources across all stages.
  */
 int devres_release_all(struct device *dev)
 {
-	unsigned long flags;
-	LIST_HEAD(todo);
-	int cnt;
+	int total_cnt = 0;
+	enum devres_stage stage;
 
-	/* Looks like an uninitialized device structure */
-	if (WARN_ON(dev->devres_head.next == NULL))
+	/* Validate device is initialized */
+	if (WARN_ON(dev->devres_head[0].next == NULL))
 		return -ENODEV;
 
-	/* Nothing to release if list is empty */
-	if (list_empty(&dev->devres_head))
-		return 0;
+	/* Release stages in order: REGISTRATION first, then DATA */
+	devres_for_each_stage(stage) {
+		unsigned long flags;
+		LIST_HEAD(todo);
+		int cnt;
 
-	spin_lock_irqsave(&dev->devres_lock, flags);
-	cnt = remove_nodes(dev, dev->devres_head.next, &dev->devres_head, &todo);
-	spin_unlock_irqrestore(&dev->devres_lock, flags);
+		/* Quick check if this stage is empty */
+		if (list_empty(&dev->devres_head[stage]))
+			continue;
 
-	release_nodes(dev, &todo);
-	return cnt;
+		/* Move all entries from this stage to temp list */
+		spin_lock_irqsave(&dev->devres_lock, flags);
+		cnt = remove_nodes(dev, dev->devres_head[stage].next,
+				   &dev->devres_head[stage], &todo);
+		spin_unlock_irqrestore(&dev->devres_lock, flags);
+
+		/* Release outside spinlock */
+		release_nodes(dev, &todo);
+		total_cnt += cnt;
+	}
+
+	return total_cnt;
 }
 
 static void devres_group_free(struct devres_node *node)
@@ -590,44 +796,66 @@ static void devres_group_free(struct devres_node *node)
  * @id: Separator ID
  * @gfp: Allocation flags
  *
- * Open a new devres group for @dev with @id.  For @id, using a
- * pointer to an object which won't be used for another group is
+ * Open a new devres group for @dev with @id spanning all stages.  For @id,
+ * using a pointer to an object which won't be used for another group is
  * recommended.  If @id is NULL, address-wise unique ID is created.
+ *
+ * This function creates N separate group structures (one per stage), all
+ * sharing the same @id, and inserts them into their respective stage lists.
  *
  * RETURNS:
  * ID of the new group, NULL on failure.
  */
 void *devres_open_group(struct device *dev, void *id, gfp_t gfp)
 {
-	struct devres_group *grp;
+	struct devres_group *grp_array[DEVRES_STAGE_MAX];
+	unsigned long flags;
+	enum devres_stage stage;
+	void *group_id;
 
-	grp = kmalloc_obj(*grp, gfp);
-	if (unlikely(!grp))
-		return NULL;
+	devres_for_each_stage(stage) {
+		grp_array[stage] = kmalloc(sizeof(struct devres_group), gfp);
+		if (unlikely(!grp_array[stage])) {
+			enum devres_stage s;
+			for (s = DEVRES_STAGE_REGISTRATION; s < stage; s++)
+				kfree(grp_array[s]);
+			return NULL;
+		}
+	}
 
-	devres_node_init(&grp->node[0], &group_open_release, devres_group_free);
-	devres_node_init(&grp->node[1], &group_close_release, NULL);
-	devres_set_node_dbginfo(&grp->node[0], "grp<", 0);
-	devres_set_node_dbginfo(&grp->node[1], "grp>", 0);
-	grp->id = grp;
-	if (id)
-		grp->id = id;
-	grp->color = 0;
+	group_id = id ? id : grp_array[DEVRES_STAGE_REGISTRATION];
 
-	devres_node_add(dev, &grp->node[0]);
-	return grp->id;
+	devres_for_each_stage(stage) {
+		struct devres_group *grp = grp_array[stage];
+
+		devres_node_init(&grp->node[0], &group_open_release,
+				 devres_group_free);
+		devres_node_init(&grp->node[1], &group_close_release, NULL);
+		devres_set_node_dbginfo(&grp->node[0], "grp<", 0);
+		devres_set_node_dbginfo(&grp->node[1], "grp>", 0);
+		grp->id = group_id;
+		grp->color = 0;
+	}
+
+	spin_lock_irqsave(&dev->devres_lock, flags);
+	devres_for_each_stage(stage)
+		add_dr(dev, &grp_array[stage]->node[0], stage);
+	spin_unlock_irqrestore(&dev->devres_lock, flags);
+
+	return group_id;
 }
 EXPORT_SYMBOL_GPL(devres_open_group);
 
 /*
- * Find devres group with ID @id.  If @id is NULL, look for the latest open
- * group.
+ * Find devres group with ID @id in the specified stage's list.
+ * If @id is NULL, look for the latest open group.
  */
-static struct devres_group *find_group(struct device *dev, void *id)
+static struct devres_group *find_group(struct device *dev, void *id,
+					enum devres_stage stage)
 {
 	struct devres_node *node;
 
-	list_for_each_entry_reverse(node, &dev->devres_head, entry) {
+	list_for_each_entry_reverse(node, &dev->devres_head[stage], entry) {
 		struct devres_group *grp;
 
 		if (node->release != &group_open_release)
@@ -650,19 +878,23 @@ static struct devres_group *find_group(struct device *dev, void *id)
  * @dev: Device to close devres group for
  * @id: ID of target group, can be NULL
  *
- * Close the group identified by @id.  If @id is NULL, the latest open
- * group is selected.
+ * Close the group identified by @id across all stages.  If @id is NULL,
+ * the latest open group is selected. This inserts closing markers in all
+ * stages, creating explicit boundaries for the group.
  */
 void devres_close_group(struct device *dev, void *id)
 {
-	struct devres_group *grp;
+	enum devres_stage stage;
 
 	guard(spinlock_irqsave)(&dev->devres_lock);
-	grp = find_group(dev, id);
-	if (grp)
-		add_dr(dev, &grp->node[1]);
-	else
-		WARN_ON(1);
+
+	devres_for_each_stage(stage) {
+		struct devres_group *grp = find_group(dev, id, stage);
+		if (grp)
+			add_dr(dev, &grp->node[1], stage);
+		else if (stage == DEVRES_STAGE_REGISTRATION)
+			WARN_ON(1);
+	}
 }
 EXPORT_SYMBOL_GPL(devres_close_group);
 
@@ -671,28 +903,38 @@ EXPORT_SYMBOL_GPL(devres_close_group);
  * @dev: Device to remove group for
  * @id: ID of target group, can be NULL
  *
- * Remove the group identified by @id.  If @id is NULL, the latest
- * open group is selected.  Note that removing a group doesn't affect
- * any other resources.
+ * Remove the group identified by @id across all stages.  If @id is NULL,
+ * the latest open group is selected.  Note that removing a group doesn't
+ * affect any other resources - only the group markers are removed.
  */
 void devres_remove_group(struct device *dev, void *id)
 {
-	struct devres_group *grp;
+	struct devres_group *grp_array[DEVRES_STAGE_MAX];
+	enum devres_stage stage;
 	unsigned long flags;
 
 	spin_lock_irqsave(&dev->devres_lock, flags);
 
-	grp = find_group(dev, id);
-	if (grp) {
-		list_del_init(&grp->node[0].entry);
-		list_del_init(&grp->node[1].entry);
-		devres_log(dev, &grp->node[0], "REM");
-	} else
-		WARN_ON(1);
+	/* Find and remove the group from each stage, saving pointers */
+	devres_for_each_stage(stage) {
+		grp_array[stage] = find_group(dev, id, stage);
+		if (grp_array[stage]) {
+			list_del_init(&grp_array[stage]->node[0].entry);
+			list_del_init(&grp_array[stage]->node[1].entry);
+			if (stage == DEVRES_STAGE_REGISTRATION)
+				devres_log(dev, &grp_array[stage]->node[0], "REM");
+		} else if (stage == DEVRES_STAGE_REGISTRATION) {
+			WARN_ON(1);
+		}
+	}
 
 	spin_unlock_irqrestore(&dev->devres_lock, flags);
 
-	kfree(grp);
+	/* Free all N group structures */
+	devres_for_each_stage(stage) {
+		if (grp_array[stage])
+			kfree(grp_array[stage]);
+	}
 }
 EXPORT_SYMBOL_GPL(devres_remove_group);
 
@@ -701,44 +943,70 @@ EXPORT_SYMBOL_GPL(devres_remove_group);
  * @dev: Device to release group for
  * @id: ID of target group, can be NULL
  *
- * Release all resources in the group identified by @id.  If @id is
- * NULL, the latest open group is selected.  The selected group and
- * groups properly nested inside the selected group are removed.
+ * Release all resources in the group identified by @id across all stages.
+ * If @id is NULL, the latest open group is selected.  The selected group
+ * and groups properly nested inside the selected group are removed.
+ *
+ * Resources are released in stage order (REGISTRATION → DATA) to ensure
+ * proper cleanup ordering. Within each stage, resources are released in
+ * LIFO order.
  *
  * RETURNS:
- * The number of released non-group resources.
+ * The number of released non-group resources across all stages.
  */
 int devres_release_group(struct device *dev, void *id)
 {
-	struct devres_group *grp;
+	struct devres_group *grp_array[DEVRES_STAGE_MAX];
+	enum devres_stage stage;
 	unsigned long flags;
-	LIST_HEAD(todo);
-	int cnt = 0;
+	int total_cnt = 0;
+	bool found = false;
 
 	spin_lock_irqsave(&dev->devres_lock, flags);
-	grp = find_group(dev, id);
-	if (grp) {
+	devres_for_each_stage(stage) {
+		grp_array[stage] = find_group(dev, id, stage);
+		if (grp_array[stage])
+			found = true;
+	}
+	spin_unlock_irqrestore(&dev->devres_lock, flags);
+
+	if (!found) {
+		bool all_empty = true;
+		devres_for_each_stage(stage) {
+			if (!list_empty(&dev->devres_head[stage])) {
+				all_empty = false;
+				break;
+			}
+		}
+		if (!all_empty)
+			WARN_ON(1);
+		return 0;
+	}
+
+	devres_for_each_stage(stage) {
+		struct devres_group *grp = grp_array[stage];
+		LIST_HEAD(todo);
+		int cnt;
+
+		if (!grp)
+			continue;
+
+		spin_lock_irqsave(&dev->devres_lock, flags);
+
 		struct list_head *first = &grp->node[0].entry;
-		struct list_head *end = &dev->devres_head;
+		struct list_head *end = &dev->devres_head[stage];
 
 		if (!list_empty(&grp->node[1].entry))
 			end = grp->node[1].entry.next;
 
 		cnt = remove_nodes(dev, first, end, &todo);
-	} else if (list_empty(&dev->devres_head)) {
-		/*
-		 * dev is probably dying via devres_release_all(): groups
-		 * have already been removed and are on the process of
-		 * being released - don't touch and don't warn.
-		 */
-	} else {
-		WARN_ON(1);
+		spin_unlock_irqrestore(&dev->devres_lock, flags);
+
+		release_nodes(dev, &todo);
+		total_cnt += cnt;
 	}
-	spin_unlock_irqrestore(&dev->devres_lock, flags);
 
-	release_nodes(dev, &todo);
-
-	return cnt;
+	return total_cnt;
 }
 EXPORT_SYMBOL_GPL(devres_release_group);
 
@@ -778,16 +1046,20 @@ static void devm_action_free(struct devres_node *node)
 }
 
 /**
- * __devm_add_action() - add a custom action to list of managed resources
+ * __devm_add_action_stage() - add a custom action to a specific stage
  * @dev: Device that owns the action
  * @action: Function that should be called
  * @data: Pointer to data passed to @action implementation
  * @name: Name of the resource (for debugging purposes)
+ * @stage: Stage to add the action to
  *
- * This adds a custom action to the list of managed resources so that
- * it gets executed as part of standard resource unwinding.
+ * This adds a custom action to the specified stage of managed resources
+ * so that it gets executed as part of standard resource unwinding in
+ * stage order.
  */
-int __devm_add_action(struct device *dev, void (*action)(void *), void *data, const char *name)
+int __devm_add_action_stage(struct device *dev, void (*action)(void *),
+			    void *data, const char *name,
+			    enum devres_stage stage)
 {
 	struct devres_action *devres;
 
@@ -801,14 +1073,34 @@ int __devm_add_action(struct device *dev, void (*action)(void *), void *data, co
 	devres->action.data = data;
 	devres->action.action = action;
 
-	devres_node_add(dev, &devres->node);
+	devres_node_add_stage(dev, &devres->node, stage);
+
 	return 0;
+}
+EXPORT_SYMBOL_GPL(__devm_add_action_stage);
+
+/**
+ * __devm_add_action() - add a custom action to list of managed resources
+ * @dev: Device that owns the action
+ * @action: Function that should be called
+ * @data: Pointer to data passed to @action implementation
+ * @name: Name of the resource (for debugging purposes)
+ *
+ * This adds a custom action to the list of managed resources so that
+ * it gets executed as part of standard resource unwinding. Actions are
+ * added to the DATA stage.
+ */
+int __devm_add_action(struct device *dev, void (*action)(void *), void *data, const char *name)
+{
+	return __devm_add_action_stage(dev, action, data, name,
+				       DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(__devm_add_action);
 
 static struct devres_action *devres_action_find(struct device *dev,
 						void (*action)(void *),
-						void *data)
+						void *data,
+						enum devres_stage stage)
 {
 	struct devres_node *node;
 	struct action_devres target = {
@@ -816,7 +1108,7 @@ static struct devres_action *devres_action_find(struct device *dev,
 		.action = action,
 	};
 
-	list_for_each_entry_reverse(node, &dev->devres_head, entry) {
+	list_for_each_entry_reverse(node, &dev->devres_head[stage], entry) {
 		struct devres_action *dr = container_of(node, struct devres_action, node);
 
 		if (node->release != devm_action_release)
@@ -828,23 +1120,32 @@ static struct devres_action *devres_action_find(struct device *dev,
 	return NULL;
 }
 
-bool devm_is_action_added(struct device *dev, void (*action)(void *), void *data)
+bool devm_is_action_added_stage(struct device *dev, void (*action)(void *),
+				void *data, enum devres_stage stage)
 {
 	guard(spinlock_irqsave)(&dev->devres_lock);
 
-	return !!devres_action_find(dev, action, data);
+	return !!devres_action_find(dev, action, data, stage);
+}
+EXPORT_SYMBOL_GPL(devm_is_action_added_stage);
+
+bool devm_is_action_added(struct device *dev, void (*action)(void *), void *data)
+{
+	return devm_is_action_added_stage(dev, action, data,
+					  DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devm_is_action_added);
 
 static struct devres_action *remove_action(struct device *dev,
 					   void (*action)(void *),
-					   void *data)
+					   void *data,
+					   enum devres_stage stage)
 {
 	struct devres_action *dr;
 
 	guard(spinlock_irqsave)(&dev->devres_lock);
 
-	dr = devres_action_find(dev, action, data);
+	dr = devres_action_find(dev, action, data, stage);
 	if (!dr)
 		return ERR_PTR(-ENOENT);
 
@@ -853,6 +1154,44 @@ static struct devres_action *remove_action(struct device *dev,
 
 	return dr;
 }
+
+/**
+ * devm_remove_action_nowarn_stage() - removes previously added custom action from a stage
+ * @dev: Device that owns the action
+ * @action: Function implementing the action
+ * @data: Pointer to data passed to @action implementation
+ * @stage: Stage to remove the action from
+ *
+ * Removes instance of @action from the specified @stage previously added by
+ * devm_add_action_stage(). Both action and data should match one of the
+ * existing entries.
+ *
+ * In contrast to devm_remove_action(), this function does not WARN() if no
+ * entry could have been found.
+ *
+ * This should only be used if the action is contained in an object with
+ * independent lifetime management, e.g. the Devres rust abstraction.
+ *
+ * Causing the warning from regular driver code most likely indicates an abuse
+ * of the devres API.
+ *
+ * Returns: 0 on success, -ENOENT if no entry could have been found.
+ */
+int devm_remove_action_nowarn_stage(struct device *dev,
+				    void (*action)(void *),
+				    void *data, enum devres_stage stage)
+{
+	struct devres_action *dr;
+
+	dr = remove_action(dev, action, data, stage);
+	if (IS_ERR(dr))
+		return PTR_ERR(dr);
+
+	kfree(dr);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(devm_remove_action_nowarn_stage);
 
 /**
  * devm_remove_action_nowarn() - removes previously added custom action
@@ -878,17 +1217,36 @@ int devm_remove_action_nowarn(struct device *dev,
 			      void (*action)(void *),
 			      void *data)
 {
-	struct devres_action *dr;
-
-	dr = remove_action(dev, action, data);
-	if (IS_ERR(dr))
-		return PTR_ERR(dr);
-
-	kfree(dr);
-
-	return 0;
+	return devm_remove_action_nowarn_stage(dev, action, data,
+					       DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devm_remove_action_nowarn);
+
+/**
+ * devm_release_action_stage() - release previously added custom action from a stage
+ * @dev: Device that owns the action
+ * @action: Function implementing the action
+ * @data: Pointer to data passed to @action implementation
+ * @stage: Stage to release the action from
+ *
+ * Releases and removes instance of @action from the specified @stage
+ * previously added by devm_add_action_stage(). Both action and data
+ * should match one of the existing entries.
+ */
+void devm_release_action_stage(struct device *dev, void (*action)(void *),
+			       void *data, enum devres_stage stage)
+{
+	struct devres_action *dr;
+
+	dr = remove_action(dev, action, data, stage);
+	if (WARN_ON(IS_ERR(dr)))
+		return;
+
+	dr->action.action(dr->action.data);
+
+	kfree(dr);
+}
+EXPORT_SYMBOL_GPL(devm_release_action_stage);
 
 /**
  * devm_release_action() - release previously added custom action
@@ -902,15 +1260,7 @@ EXPORT_SYMBOL_GPL(devm_remove_action_nowarn);
  */
 void devm_release_action(struct device *dev, void (*action)(void *), void *data)
 {
-	struct devres_action *dr;
-
-	dr = remove_action(dev, action, data);
-	if (WARN_ON(IS_ERR(dr)))
-		return;
-
-	dr->action.action(dr->action.data);
-
-	kfree(dr);
+	devm_release_action_stage(dev, action, data, DEVRES_STAGE_DATA);
 }
 EXPORT_SYMBOL_GPL(devm_release_action);
 
@@ -1035,7 +1385,8 @@ void *devm_krealloc(struct device *dev, void *ptr, size_t new_size, gfp_t gfp)
 	 */
 	spin_lock_irqsave(&dev->devres_lock, flags);
 
-	old_dr = find_dr(dev, devm_kmalloc_release, devm_kmalloc_match, ptr);
+	old_dr = find_dr(dev, devm_kmalloc_release, devm_kmalloc_match, ptr,
+			 DEVRES_STAGE_DATA);
 	if (!old_dr) {
 		spin_unlock_irqrestore(&dev->devres_lock, flags);
 		free_dr(new_dr);

@@ -19,6 +19,21 @@ struct resource;
 typedef void (*dr_release_t)(struct device *dev, void *res);
 typedef int (*dr_match_t)(struct device *dev, void *res, void *match_data);
 
+/**
+ * enum devres_stage - Device resource cleanup stages
+ * @DEVRES_STAGE_REGISTRATION: Registrations (IRQs, timers, etc.) - cleaned up first
+ * @DEVRES_STAGE_DATA: Data resources (memory, mappings, etc.)
+ * @DEVRES_STAGE_MAX: Sentinel for array sizing
+ *
+ * Stages are released in order: REGISTRATION → DATA
+ * Within each stage, resources are released in LIFO order.
+ */
+enum devres_stage {
+	DEVRES_STAGE_REGISTRATION = 0,
+	DEVRES_STAGE_DATA = 1,
+	DEVRES_STAGE_MAX
+};
+
 void * __malloc
 __devres_alloc_node(dr_release_t release, size_t size, gfp_t gfp, int nid, const char *name);
 #define devres_alloc(release, size, gfp) \
@@ -28,11 +43,27 @@ __devres_alloc_node(dr_release_t release, size_t size, gfp_t gfp, int nid, const
 
 void devres_free(void *res);
 void devres_add(struct device *dev, void *res);
+void devres_add_stage(struct device *dev, void *res, enum devres_stage stage);
+
 void *devres_find(struct device *dev, dr_release_t release, dr_match_t match, void *match_data);
+void *devres_find_stage(struct device *dev, dr_release_t release, dr_match_t match,
+			void *match_data, enum devres_stage stage);
+
 void *devres_get(struct device *dev, void *new_res, dr_match_t match, void *match_data);
+void *devres_get_stage(struct device *dev, void *new_res, dr_match_t match,
+		       void *match_data, enum devres_stage stage);
+
 void *devres_remove(struct device *dev, dr_release_t release, dr_match_t match, void *match_data);
+void *devres_remove_stage(struct device *dev, dr_release_t release, dr_match_t match,
+			  void *match_data, enum devres_stage stage);
+
 int devres_destroy(struct device *dev, dr_release_t release, dr_match_t match, void *match_data);
+int devres_destroy_stage(struct device *dev, dr_release_t release, dr_match_t match,
+			 void *match_data, enum devres_stage stage);
+
 int devres_release(struct device *dev, dr_release_t release, dr_match_t match, void *match_data);
+int devres_release_stage(struct device *dev, dr_release_t release, dr_match_t match,
+			 void *match_data, enum devres_stage stage);
 
 /* devres group */
 void * __must_check devres_open_group(struct device *dev, void *id, gfp_t gfp);
@@ -144,6 +175,8 @@ void __iomem *devm_of_iomap(struct device *dev, struct device_node *node, int in
 
 /* allows to add/remove a custom action to devres stack */
 int devm_remove_action_nowarn(struct device *dev, void (*action)(void *), void *data);
+int devm_remove_action_nowarn_stage(struct device *dev, void (*action)(void *),
+				    void *data, enum devres_stage stage);
 
 /**
  * devm_remove_action() - removes previously added custom action
@@ -161,10 +194,16 @@ void devm_remove_action(struct device *dev, void (*action)(void *), void *data)
 }
 
 void devm_release_action(struct device *dev, void (*action)(void *), void *data);
+void devm_release_action_stage(struct device *dev, void (*action)(void *),
+			       void *data, enum devres_stage stage);
 
 int __devm_add_action(struct device *dev, void (*action)(void *), void *data, const char *name);
+int __devm_add_action_stage(struct device *dev, void (*action)(void *),
+			    void *data, const char *name, enum devres_stage stage);
 #define devm_add_action(dev, action, data) \
 	__devm_add_action(dev, action, data, #action)
+#define devm_add_action_stage(dev, action, data, stage) \
+	__devm_add_action_stage(dev, action, data, #action, stage)
 
 static inline int __devm_add_action_or_reset(struct device *dev, void (*action)(void *),
 					     void *data, const char *name)
@@ -177,9 +216,26 @@ static inline int __devm_add_action_or_reset(struct device *dev, void (*action)(
 
 	return ret;
 }
+
+static inline int __devm_add_action_or_reset_stage(struct device *dev, void (*action)(void *),
+						   void *data, const char *name,
+						   enum devres_stage stage)
+{
+	int ret;
+
+	ret = __devm_add_action_stage(dev, action, data, name, stage);
+	if (ret)
+		action(data);
+
+	return ret;
+}
 #define devm_add_action_or_reset(dev, action, data) \
 	__devm_add_action_or_reset(dev, action, data, #action)
+#define devm_add_action_or_reset_stage(dev, action, data, stage) \
+	__devm_add_action_or_reset_stage(dev, action, data, #action, stage)
 
 bool devm_is_action_added(struct device *dev, void (*action)(void *), void *data);
+bool devm_is_action_added_stage(struct device *dev, void (*action)(void *),
+				void *data, enum devres_stage stage);
 
 #endif /* _DEVICE_DEVRES_H_ */
