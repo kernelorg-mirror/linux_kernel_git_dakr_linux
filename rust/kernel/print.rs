@@ -6,11 +6,16 @@
 //!
 //! Reference: <https://docs.kernel.org/core-api/printk-basics.html>
 
+use core::cell::UnsafeCell;
+
 use crate::{
     ffi::{c_char, c_void},
     fmt,
     prelude::*,
-    str::RawFormatter,
+    str::{
+        CStrExt,
+        RawFormatter, //
+    },
     sync::atomic::{
         Atomic,
         AtomicType,
@@ -134,6 +139,48 @@ pub fn call_printk_cont(args: fmt::Arguments<'_>) {
     unsafe {
         bindings::_printk(
             format_strings::CONT.as_ptr(),
+            core::ptr::from_ref(&args).cast::<c_void>(),
+        );
+    }
+}
+
+/// Wrapper for a format string pointer placed in the `__trace_printk_fmt`
+/// section. The tracing subsystem's module notifier scans this section to
+/// allocate per-cpu trace buffers.
+///
+/// Uses [`UnsafeCell`] because [`hold_module_trace_bprintk_format`] writes back
+/// to these entries at module load time.
+///
+/// [`hold_module_trace_bprintk_format`]: srctree/kernel/trace/trace_printk.c
+///
+/// Public but hidden since it should only be used from public macros.
+#[doc(hidden)]
+#[repr(transparent)]
+pub struct TracePrintkFmtPtr(pub UnsafeCell<*const c_char>);
+
+// SAFETY: The contained pointer is only written to by the tracing subsystem's
+// module notifier during module init (single-threaded context) and points to a
+// static string.
+unsafe impl Sync for TracePrintkFmtPtr {}
+
+/// Prints a message to the kernel trace buffer via [`__trace_printk`].
+///
+/// Public but hidden since it should only be used from public macros.
+///
+/// [`__trace_printk`]: srctree/kernel/trace/trace_printk.c
+#[doc(hidden)]
+#[cfg_attr(not(CONFIG_TRACING), allow(unused_variables))]
+pub fn call_trace_printk(args: fmt::Arguments<'_>) {
+    // `__trace_printk` returns the number of characters written, or
+    // a negative value on error; neither case needs handling here.
+    #[cfg(CONFIG_TRACING)]
+    // SAFETY: The format string is a well-formed, null-terminated `%pA`
+    // specifier, and `args` points to a valid `fmt::Arguments` whose
+    // lifetime spans this call.
+    unsafe {
+        bindings::__trace_printk(
+            0,
+            c"%pA".as_char_ptr(),
             core::ptr::from_ref(&args).cast::<c_void>(),
         );
     }
@@ -427,6 +474,46 @@ macro_rules! pr_cont (
     ($($arg:tt)*) => (
         $crate::print_macro!($crate::print::format_strings::CONT, true, $($arg)*)
     )
+);
+
+/// Prints a message to the kernel trace buffer.
+///
+/// This is the Rust equivalent of the kernel's [`trace_printk`] macro.
+/// It is intended as a debugging tool for the developer only -- please refrain
+/// from leaving `trace_printk!` calls scattered around in your code.
+///
+/// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
+/// [`std::format!`] for information about the formatting syntax.
+///
+/// [`trace_printk`]: srctree/include/linux/trace_printk.h
+/// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
+/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
+///
+/// # Examples
+///
+/// ```
+/// # use kernel::trace_printk;
+/// trace_printk!("hello {}\n", "there");
+/// ```
+#[macro_export]
+macro_rules! trace_printk (
+    ($($arg:tt)*) => ({
+        #[cfg(CONFIG_TRACING)]
+        {
+            #[used(linker)]
+            #[link_section = "__trace_printk_fmt"]
+            static _TRACE_PRINTK_FMT: $crate::print::TracePrintkFmtPtr =
+                $crate::print::TracePrintkFmtPtr(
+                    ::core::cell::UnsafeCell::new(
+                        $crate::str::as_char_ptr_in_const_context(c"%pA"),
+                    ),
+                );
+        }
+
+        $crate::print::call_trace_printk(
+            $crate::prelude::fmt!($($arg)*),
+        );
+    })
 );
 
 /// A lightweight `call_once` primitive.
