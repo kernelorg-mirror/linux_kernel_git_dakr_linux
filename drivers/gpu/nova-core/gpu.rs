@@ -2,11 +2,15 @@
 
 use kernel::{
     device,
-    devres::Devres,
+    devres::{
+        Devres,
+        DevresChain, //
+    },
     fmt,
     pci,
     prelude::*,
-    sync::Arc, //
+    sync::Arc,
+    types::ForLt, //
 };
 
 use crate::{
@@ -244,7 +248,8 @@ pub(crate) struct Gpu {
     bar: Arc<Devres<Bar0>>,
     /// System memory page required for flushing all pending GPU-side memory writes done through
     /// PCIE into system memory, via sysmembar (A GPU-initiated HW memory-barrier operation).
-    sysmem_flush: SysmemFlush,
+    #[allow(clippy::type_complexity)]
+    sysmem_flush: DevresChain<ForLt!(SysmemFlush<'_>), Bar0>,
     /// GSP falcon instance, used for GSP boot up and cleanup.
     gsp_falcon: Falcon<GspFalcon>,
     /// SEC2 falcon instance, used for GSP boot up and cleanup.
@@ -271,7 +276,11 @@ impl Gpu {
                     .inspect_err(|_| dev_err!(pdev.as_ref(), "GFW boot did not complete\n"))?;
             },
 
-            sysmem_flush: SysmemFlush::register(pdev.as_ref(), bar, spec.chipset)?,
+            sysmem_flush: DevresChain::new(
+                pdev.as_ref(),
+                &devres_bar,
+                |bar| SysmemFlush::register(pdev.as_ref(), bar, spec.chipset),
+            )?,
 
             gsp_falcon: Falcon::new(
                 pdev.as_ref(),
@@ -287,16 +296,5 @@ impl Gpu {
 
             bar: devres_bar,
         })
-    }
-
-    /// Called when the corresponding [`Device`](device::Device) is unbound.
-    ///
-    /// Note: This method must only be called from `Driver::unbind`.
-    pub(crate) fn unbind(&self, dev: &device::Device<device::Core>) {
-        kernel::warn_on!(self
-            .bar
-            .access(dev)
-            .inspect(|bar| self.sysmem_flush.unregister(bar))
-            .is_err());
     }
 }
