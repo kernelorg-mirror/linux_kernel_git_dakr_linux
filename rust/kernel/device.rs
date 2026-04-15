@@ -583,7 +583,7 @@ pub struct CoreInternal;
 /// from optimizations for accessing device resources, see also [`Devres::access`].
 ///
 /// [`Devres`]: kernel::devres::Devres
-/// [`Devres::access`]: kernel::devres::Devres::access
+/// [`Devres::access`]: kernel::devres::DevresChain::access
 /// [`dma::CoherentAllocation`]: kernel::dma::CoherentAllocation
 pub struct Bound;
 

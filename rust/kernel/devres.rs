@@ -13,6 +13,7 @@ use crate::{
         Device, //
     },
     error::to_result,
+    new_spinlock,
     prelude::*,
     revocable::{
         Revocable,
@@ -21,22 +22,39 @@ use crate::{
     sync::{
         aref::ARef,
         rcu,
-        Arc, //
+        Arc,
+        SpinLock, //
     },
     types::{
+        ForLt,
         ForeignOwnable,
         Opaque, //
     },
 };
 
+/// Tracks how many chained [`DevresChain`] instances depend on a resource, and whether the
+/// standalone owner deferred its revocation to the last chain.
+struct ChainState {
+    /// Number of chained [`DevresChain`] instances that depend on this resource.
+    count: i32,
+    /// Set when the standalone owner's [`Drop`] skipped revocation due to `count > 0`.
+    deferred: bool,
+}
+
 /// Inner type that embeds a `struct devres_node` and the `Revocable<T>`.
+///
+/// When used with a dependency (`D != ()`), `dep` holds a reference to the dependency's inner
+/// state.
 #[repr(C)]
 #[pin_data]
-struct Inner<T> {
+struct Inner<T, D = ()> {
     #[pin]
     node: Opaque<bindings::devres_node>,
+    dep: Option<Arc<Inner<D>>>,
     #[pin]
     data: Revocable<T>,
+    #[pin]
+    chain_state: SpinLock<ChainState>,
 }
 
 /// This abstraction is meant to be used by subsystems to containerize [`Device`] bound resources to
@@ -56,6 +74,8 @@ struct Inner<T> {
 /// [`Devres`] users should make sure to simply free the corresponding backing resource in `T`'s
 /// [`Drop`] implementation.
 ///
+/// See also [`DevresChain`] for resources that depend on another [`Devres`]-managed resource.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -63,7 +83,7 @@ struct Inner<T> {
 ///     bindings,
 ///     device::{
 ///         Bound,
-///         Device,
+///         Device, //
 ///     },
 ///     devres::Devres,
 ///     io::{
@@ -122,10 +142,7 @@ struct Inner<T> {
 /// # Ok(())
 /// # }
 /// ```
-pub struct Devres<T: Send> {
-    dev: ARef<Device>,
-    inner: Arc<Inner<T>>,
-}
+pub struct Devres<T: Send>(DevresChain<ForLt!(T)>);
 
 // Calling the FFI functions from the `base` module directly from the `Devres<T>` impl may result in
 // them being called directly from driver modules. This happens since the Rust compiler will use
@@ -184,6 +201,60 @@ mod base {
     }
 }
 
+/// Like [`Devres`], but for resources that depend on another [`Devres`]-managed resource and
+/// need access to it during teardown.
+///
+/// The resource type `F::Of<'a>` holds a direct `&'a D` reference to its dependency, so all
+/// methods, including [`Drop`], can access it directly.
+///
+/// Use the [`ForLt!`] macro to associate the resource type with its [`trait@ForLt`] implementation.
+///
+/// # Invariants
+///
+/// - The devres node of the dependency `D` is always registered before this node on the same
+///   [`Device`], ensuring this node is released first during device unbind.
+/// - The dependency's chain count is incremented while this [`DevresChain`] is alive, preventing
+///   the dependency's drop from revoking `D`.
+/// - Together, these invariants guarantee that `D` is accessible whenever this resource has not
+///   yet been revoked.
+///
+/// # Examples
+///
+/// ```ignore
+/// use kernel::{
+///     devres::DevresChain,
+///     types::ForLt, //
+/// };
+///
+/// struct MyResource<'a> {
+///     dep: &'a Bar0,
+/// }
+///
+/// impl Drop for MyResource<'_> {
+///     fn drop(&mut self) {
+///         // Can access self.dep directly -- guaranteed valid.
+///     }
+/// }
+///
+/// let res: DevresChain<ForLt!(MyResource<'_>), Bar0> =
+///     DevresChain::new(dev, &bar_devres, |bar| Ok(MyResource { dep: bar }))?;
+/// ```
+pub struct DevresChain<F: ForLt, D: Send + 'static = ()>
+where
+    F::Of<'static>: Send,
+{
+    dev: ARef<Device>,
+    inner: Arc<Inner<F::Of<'static>, D>>,
+}
+
+impl<T: Send> core::ops::Deref for Devres<T> {
+    type Target = DevresChain<ForLt!(T)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl<T: Send> Devres<T> {
     /// Creates a new [`Devres`] instance of the given `data`.
     ///
@@ -193,6 +264,30 @@ impl<T: Send> Devres<T> {
     where
         Error: From<E>,
     {
+        Ok(Self(DevresChain::new_internal(dev, data, None)?))
+    }
+}
+
+impl<F: ForLt, D: Send + 'static> DevresChain<F, D>
+where
+    F::Of<'static>: Send,
+{
+    fn new_internal<E>(
+        dev: &Device<Bound>,
+        data: impl PinInit<F::Of<'static>, E>,
+        dep: Option<Arc<Inner<D>>>,
+    ) -> Result<Self>
+    where
+        Error: From<E>,
+    {
+        // TODO: Use `core::any::type_name::<T>()` once it is a `const fn`, such that we can
+        // convert the `&str` to a `&CStr` at compile-time.
+        let name = if dep.is_some() {
+            c"DevresChain"
+        } else {
+            c"Devres"
+        };
+
         let inner = Arc::pin_init::<Error>(
             try_pin_init!(Inner {
                 node <- Opaque::ffi_init(|node: *mut bindings::devres_node| {
@@ -209,17 +304,21 @@ impl<T: Send> Devres<T> {
                     unsafe {
                         base::devres_set_node_dbginfo(
                             node,
-                            // TODO: Use `core::any::type_name::<T>()` once it is a `const fn`,
-                            // such that we can convert the `&str` to a `&CStr` at compile-time.
-                            c"Devres<T>".as_char_ptr(),
-                            core::mem::size_of::<Revocable<T>>(),
+                            name.as_char_ptr(),
+                            core::mem::size_of::<Revocable<F::Of<'static>>>(),
                         )
                     };
                 }),
+                dep,
                 data <- Revocable::new(data),
+                chain_state <- new_spinlock!(ChainState { count: 0, deferred: false }),
             }),
             GFP_KERNEL,
         )?;
+
+        if let Some(dep_inner) = &inner.dep {
+            dep_inner.chain_state.lock().count += 1;
+        }
 
         // SAFETY:
         // - `dev` is a valid pointer to a bound `struct device`.
@@ -237,8 +336,38 @@ impl<T: Send> Devres<T> {
         })
     }
 
-    fn data(&self) -> &Revocable<T> {
-        &self.inner.data
+    /// Creates a new [`DevresChain`] instance that depends on a [`Devres`]-managed resource.
+    ///
+    /// `dep` is the [`Devres`]-managed dependency that the resource requires access to during
+    /// teardown and regular operation. Both must belong to the same [`Device`].
+    ///
+    /// `f` receives a reference to the dependency's data and returns the resource to be managed.
+    /// The returned resource type `F::Of<'a>` may hold the `&'a D` reference directly, so that
+    /// [`Drop`] can access the dependency directly.
+    pub fn new(
+        dev: &Device<Bound>,
+        dep: &Devres<D>,
+        f: impl for<'a> FnOnce(&'a D) -> Result<F::Of<'a>>,
+    ) -> Result<Self> {
+        if dep.device().as_raw() != dev.as_raw() {
+            return Err(EINVAL);
+        }
+
+        let dep_inner = dep.0.inner.clone();
+
+        // SAFETY: `dev` is a `&Device<Bound>`, so the device hasn't been unbound yet and devres
+        // hasn't released any nodes. Since `dep` is alive, its data hasn't been revoked.
+        let dep_ref = unsafe { dep_inner.data.access() };
+
+        // SAFETY: The chain invariants (devres LIFO ordering + chain_state coordination) guarantee
+        // that D remains alive for as long as our Revocable data hasn't been revoked. Transmuting
+        // to 'static is sound because we store the result in a Revocable that can only be accessed
+        // while these invariants hold.
+        let dep_ref: &'static D = unsafe { &*core::ptr::from_ref(dep_ref) };
+
+        let data = f(dep_ref)?;
+
+        Self::new_internal(dev, data, Some(dep_inner))
     }
 
     #[allow(clippy::missing_safety_doc)]
@@ -249,12 +378,16 @@ impl<T: Send> Devres<T> {
         let node = Opaque::cast_from(node);
 
         // SAFETY: `node` is in the same allocation as its container.
-        let inner = unsafe { kernel::container_of!(node, Inner<T>, node) };
+        let inner = unsafe { kernel::container_of!(node, Inner<F::Of<'static>, D>, node) };
 
-        // SAFETY: `inner` is a valid `Inner<T>` pointer.
+        // SAFETY: `inner` is a valid `Inner<F::Of<'static>, D>` pointer.
         let inner = unsafe { &*inner };
 
         inner.data.revoke();
+
+        if let Some(dep_inner) = &inner.dep {
+            dep_inner.chain_state.lock().count -= 1;
+        }
     }
 
     #[allow(clippy::missing_safety_doc)]
@@ -262,33 +395,42 @@ impl<T: Send> Devres<T> {
         let node = Opaque::cast_from(node);
 
         // SAFETY: `node` is in the same allocation as its container.
-        let inner = unsafe { kernel::container_of!(node, Inner<T>, node) };
+        let inner = unsafe { kernel::container_of!(node, Inner<F::Of<'static>, D>, node) };
 
-        // SAFETY: `inner` points to the entire `Inner<T>` allocation.
+        // SAFETY: `inner` points to the entire `Inner<F::Of<'static>, D>` allocation.
         drop(unsafe { Arc::from_raw(inner) });
     }
 
-    fn remove_node(&self) -> bool {
-        // SAFETY:
-        // - `self.device().as_raw()` is a valid pointer to a bound `struct device`.
-        // - `self.inner.node.get()` is a valid pointer to a `struct devres_node`.
-        unsafe { base::devres_node_remove(self.device().as_raw(), self.inner.node.get()) }
+    /// Try to remove a devres node and drop the extra [`Arc`] reference that was taken for
+    /// `devres_node_add()` during construction.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have successfully revoked the data associated with `inner`.
+    unsafe fn try_remove_devres_node<U, V>(&self, inner: &Arc<Inner<U, V>>) {
+        // SAFETY: The caller guarantees the data has been revoked.
+        if unsafe { base::devres_node_remove(self.dev.as_raw(), inner.node.get()) } {
+            // SAFETY: The constructor took an additional reference count for
+            // `devres_node_add()`. Since removal succeeded, drop it.
+            drop(unsafe { Arc::from_raw(Arc::as_ptr(inner)) });
+        }
     }
 
-    /// Return a reference of the [`Device`] this [`Devres`] instance has been created with.
+    /// Return a reference of the [`Device`] this [`DevresChain`] instance has been created with.
     pub fn device(&self) -> &Device {
         &self.dev
     }
 
-    /// Obtain `&'a T`, bypassing the [`Revocable`].
+    /// Obtain `&'a F::Of<'a>`, bypassing the [`Revocable`].
     ///
-    /// This method allows to directly obtain a `&'a T`, bypassing the [`Revocable`], by presenting
-    /// a `&'a Device<Bound>` of the same [`Device`] this [`Devres`] instance has been created with.
+    /// This method allows to directly obtain a reference to the managed data, bypassing the
+    /// [`Revocable`], by presenting a `&'a Device<Bound>` of the same [`Device`] this instance
+    /// has been created with.
     ///
     /// # Errors
     ///
-    /// An error is returned if `dev` does not match the same [`Device`] this [`Devres`] instance
-    /// has been created with.
+    /// An error is returned if `dev` does not match the same [`Device`] this instance has been
+    /// created with.
     ///
     /// # Examples
     ///
@@ -316,50 +458,104 @@ impl<T: Send> Devres<T> {
     ///     Ok(())
     /// }
     /// ```
-    pub fn access<'a>(&'a self, dev: &'a Device<Bound>) -> Result<&'a T> {
+    pub fn access<'a>(&'a self, dev: &'a Device<Bound>) -> Result<&'a F::Of<'a>> {
         if self.dev.as_raw() != dev.as_raw() {
             return Err(EINVAL);
         }
 
-        // SAFETY: `dev` being the same device as the device this `Devres` has been created for
-        // proves that `self.data` hasn't been revoked and is guaranteed to not be revoked as long
+        // SAFETY: `dev` being the same device as the device this instance has been created for
+        // proves that the data hasn't been revoked and is guaranteed to not be revoked as long
         // as `dev` lives; `dev` lives at least as long as `self`.
-        Ok(unsafe { self.data().access() })
+        Ok(F::cast_ref(unsafe { self.inner.data.access() }))
     }
 
-    /// [`Devres`] accessor for [`Revocable::try_access`].
-    pub fn try_access(&self) -> Option<RevocableGuard<'_, T>> {
-        self.data().try_access()
+    /// [`DevresChain`] accessor for [`Revocable::try_access`].
+    pub fn try_access(&self) -> Option<DevresGuard<'_, F>> {
+        self.inner
+            .data
+            .try_access()
+            .map(|guard| DevresGuard { inner: guard })
     }
 
-    /// [`Devres`] accessor for [`Revocable::try_access_with`].
-    pub fn try_access_with<R, F: FnOnce(&T) -> R>(&self, f: F) -> Option<R> {
-        self.data().try_access_with(f)
+    /// [`DevresChain`] accessor for [`Revocable::try_access_with`].
+    pub fn try_access_with<R, G>(&self, f: G) -> Option<R>
+    where
+        G: for<'a> FnOnce(&'a F::Of<'a>) -> R,
+    {
+        self.inner.data.try_access_with(|data| f(F::cast_ref(data)))
     }
 
-    /// [`Devres`] accessor for [`Revocable::try_access_with_guard`].
-    pub fn try_access_with_guard<'a>(&'a self, guard: &'a rcu::Guard) -> Option<&'a T> {
-        self.data().try_access_with_guard(guard)
+    /// [`DevresChain`] accessor for [`Revocable::try_access_with_guard`].
+    pub fn try_access_with_guard<'a>(&'a self, guard: &'a rcu::Guard) -> Option<&'a F::Of<'a>> {
+        self.inner
+            .data
+            .try_access_with_guard(guard)
+            .map(|data| F::cast_ref(data))
     }
 }
 
-// SAFETY: `Devres` can be send to any task, if `T: Send`.
-unsafe impl<T: Send> Send for Devres<T> {}
+// SAFETY: `DevresChain` can be sent to any task, if `F::Of<'static>: Send` and `D: Send`.
+unsafe impl<F: ForLt, D: Send + 'static> Send for DevresChain<F, D> where F::Of<'static>: Send {}
 
-// SAFETY: `Devres` can be shared with any task, if `T: Sync`.
-unsafe impl<T: Send + Sync> Sync for Devres<T> {}
+// SAFETY: `DevresChain` can be shared with any task, if `F::Of<'static>: Send + Sync` and
+// `D: Send + Sync`.
+unsafe impl<F: ForLt, D: Send + Sync + 'static> Sync for DevresChain<F, D> where
+    F::Of<'static>: Send + Sync
+{
+}
 
-impl<T: Send> Drop for Devres<T> {
+/// Guard returned by [`DevresChain::try_access`].
+pub struct DevresGuard<'a, F: ForLt> {
+    inner: RevocableGuard<'a, F::Of<'static>>,
+}
+
+impl<'a, F: ForLt> core::ops::Deref for DevresGuard<'a, F> {
+    type Target = F::Of<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        F::cast_ref(&*self.inner)
+    }
+}
+
+impl<F: ForLt, D: Send + 'static> Drop for DevresChain<F, D>
+where
+    F::Of<'static>: Send,
+{
     fn drop(&mut self) {
-        // SAFETY: When `drop` runs, it is guaranteed that nobody is accessing the revocable data
-        // anymore, hence it is safe not to wait for the grace period to finish.
-        if unsafe { self.data().revoke_nosync() } {
-            // We revoked `self.data` before devres did, hence try to remove it.
-            if self.remove_node() {
-                // SAFETY: In `Self::new` we have taken an additional reference count of `self.data`
-                // for `devres_node_add()`. Since `remove_node()` was successful, we have to drop
-                // this additional reference count.
-                drop(unsafe { Arc::from_raw(Arc::as_ptr(&self.inner)) });
+        // Standalone with active chains: defer revocation so the last chain to drop will
+        // revoke on our behalf. If no chain does, devres will revoke during device unbind.
+        if self.inner.dep.is_none() {
+            let mut state = self.inner.chain_state.lock();
+            if state.count > 0 {
+                state.deferred = true;
+                return;
+            }
+        }
+
+        // SAFETY: When `drop` runs, it is guaranteed that nobody is accessing the revocable
+        // data anymore, hence it is safe not to wait for the grace period to finish.
+        if !unsafe { self.inner.data.revoke_nosync() } {
+            return;
+        }
+
+        // SAFETY: We successfully revoked our data above.
+        unsafe { self.try_remove_devres_node(&self.inner) };
+
+        // Chained: update the dependency's chain state and possibly finalize it.
+        if let Some(dep_inner) = &self.inner.dep {
+            let should_revoke_dep = {
+                let mut state = dep_inner.chain_state.lock();
+                state.count -= 1;
+                state.count == 0 && state.deferred
+            };
+
+            if should_revoke_dep {
+                // SAFETY: The standalone `Devres<D>` has been dropped (`deferred` is set),
+                // so all Rust references to `D` through the `Devres` API have been released.
+                if unsafe { dep_inner.data.revoke_nosync() } {
+                    // SAFETY: We successfully revoked the dependency's data.
+                    unsafe { self.try_remove_devres_node(dep_inner) };
+                }
             }
         }
     }
