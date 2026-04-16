@@ -8,7 +8,8 @@ use kernel::{
     device::{
         Bound,
         Core,
-        Device, //
+        Device,
+        DeviceContext, //
     },
     devres::Devres,
     drm,
@@ -145,7 +146,7 @@ impl platform::Driver for TyrPlatformDriverData {
                 gpu_info,
         });
 
-        let tdev = drm::UnregisteredDevice::<TyrDrmDriver>::new(pdev.as_ref())?;
+        let tdev = drm::UnregisteredDevice::<TyrDrmDriver>::new(pdev)?;
         let tdev = drm::driver::Registration::new_foreign_owned(tdev, pdev.as_ref(), data, 0)?;
 
         let driver = TyrPlatformDriverData {
@@ -190,6 +191,7 @@ impl drm::Driver for TyrDrmDriver {
     type Data = TyrDrmDeviceData;
     type File = TyrDrmFileData;
     type Object<R: drm::DeviceContext> = drm::gem::Object<TyrObject, R>;
+    type ParentDevice<Ctx: DeviceContext> = platform::Device<Ctx>;
 
     const INFO: drm::DriverInfo = INFO;
 
