@@ -42,18 +42,21 @@ const AUXILIARY_NAME: &CStr = c"nova-drm";
 kernel::auxiliary_device_table!(
     AUX_TABLE,
     MODULE_AUX_TABLE,
-    <NovaDriver as auxiliary::Driver>::IdInfo,
+    <NovaDriver as auxiliary::Driver<'_>>::IdInfo,
     [(
         auxiliary::DeviceId::new(NOVA_CORE_MODULE_NAME, AUXILIARY_NAME),
         ()
     )]
 );
 
-impl auxiliary::Driver for NovaDriver {
+impl<'bound> auxiliary::Driver<'bound> for NovaDriver {
     type IdInfo = ();
     const ID_TABLE: auxiliary::IdTable<Self::IdInfo> = &AUX_TABLE;
 
-    fn probe(adev: &auxiliary::Device<Core>, _info: &Self::IdInfo) -> impl PinInit<Self, Error> {
+    fn probe(
+        adev: &'bound auxiliary::Device<Core>,
+        _info: &'bound Self::IdInfo,
+    ) -> impl PinInit<Self, Error> + 'bound {
         let data = try_pin_init!(NovaData { adev: adev.into() });
 
         let drm = drm::Device::<Self>::new(adev.as_ref(), data)?;
