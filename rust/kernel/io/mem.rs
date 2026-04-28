@@ -9,7 +9,7 @@ use crate::{
         Bound,
         Device, //
     },
-    devres::Devres,
+    devres::DevresLt,
     io::{
         self,
         resource::{
@@ -20,6 +20,7 @@ use crate::{
         MmioRaw, //
     },
     prelude::*,
+    types::ForLt, //
 };
 
 /// An IO request for a specific device and resource.
@@ -170,6 +171,18 @@ pub struct ExclusiveIoMem<'bound, const SIZE: usize> {
     _region: Region,
 }
 
+// SAFETY: `ExclusiveIoMem<'bound, SIZE>` is covariant over `'bound` --
+// it holds an `IoMem<'bound, SIZE>`, which holds
+// `&'bound Device<Bound>`, which is covariant.
+unsafe impl<const SIZE: usize> ForLt for ExclusiveIoMem<'static, SIZE> {
+    type Of<'bound> = ExclusiveIoMem<'bound, SIZE>;
+}
+
+/// A device-managed exclusive I/O memory region.
+///
+/// See [`ExclusiveIoMem::into_devres`].
+pub type DevresExclusiveIoMem<const SIZE: usize> = DevresLt<ExclusiveIoMem<'static, SIZE>>;
+
 impl<'bound, const SIZE: usize> ExclusiveIoMem<'bound, SIZE> {
     /// Creates a new `ExclusiveIoMem` instance.
     fn ioremap(dev: &'bound Device<Bound>, resource: &Resource) -> Result<Self> {
@@ -196,15 +209,16 @@ impl<'bound, const SIZE: usize> ExclusiveIoMem<'bound, SIZE> {
 
     /// Consume the `ExclusiveIoMem` and register it as a device-managed resource.
     ///
-    /// The returned `Devres<ExclusiveIoMem<'static, SIZE>>` can outlive the original lifetime
-    /// `'bound`. Access to the I/O memory is revoked when the device is unbound.
-    pub fn into_devres(self) -> Result<Devres<ExclusiveIoMem<'static, SIZE>>> {
-        // SAFETY: Casting to `'static` is sound because `Devres` guarantees the
+    /// Access methods on the returned [`DevresLt`] shorten the inner lifetime via
+    /// [`ForLt::cast_ref`], so the transmuted `'static` is never exposed to callers.
+    pub fn into_devres(self) -> Result<DevresLt<ExclusiveIoMem<'static, SIZE>>> {
+        // SAFETY: Casting to `'static` is sound because `DevresLt` guarantees the
         // `ExclusiveIoMem` does not actually outlive the device -- access is revoked and the
-        // resource is released when the device is unbound.
+        // resource is released when the device is unbound. The `ForLt` encoding ensures
+        // `access()` shortens the lifetime back to the caller's borrow.
         let iomem: ExclusiveIoMem<'static, SIZE> = unsafe { core::mem::transmute(self) };
         let dev = iomem.iomem.dev;
-        Devres::new(dev, iomem)
+        DevresLt::new(dev, iomem)
     }
 }
 
@@ -229,6 +243,17 @@ pub struct IoMem<'bound, const SIZE: usize = 0> {
     dev: &'bound Device<Bound>,
     io: MmioRaw<SIZE>,
 }
+
+// SAFETY: `IoMem<'bound, SIZE>` is covariant over `'bound` -- it holds
+// `&'bound Device<Bound>`, which is covariant.
+unsafe impl<const SIZE: usize> ForLt for IoMem<'static, SIZE> {
+    type Of<'bound> = IoMem<'bound, SIZE>;
+}
+
+/// A device-managed I/O memory region.
+///
+/// See [`IoMem::into_devres`].
+pub type DevresIoMem<const SIZE: usize> = DevresLt<IoMem<'static, SIZE>>;
 
 impl<'bound, const SIZE: usize> IoMem<'bound, SIZE> {
     fn ioremap(dev: &'bound Device<Bound>, resource: &Resource) -> Result<Self> {
@@ -269,16 +294,16 @@ impl<'bound, const SIZE: usize> IoMem<'bound, SIZE> {
 
     /// Consume the `IoMem` and register it as a device-managed resource.
     ///
-    /// The returned `Devres<IoMem<'static, SIZE>>` can outlive the original
-    /// lifetime `'bound`. Access to the I/O memory is revoked when the device
-    /// is unbound.
-    pub fn into_devres(self) -> Result<Devres<IoMem<'static, SIZE>>> {
-        // SAFETY: Casting to `'static` is sound because `Devres` guarantees the `IoMem` does not
-        // actually outlive the device -- access is revoked and the resource is released when the
-        // device is unbound.
+    /// Access methods on the returned [`DevresLt`] shorten the inner lifetime via
+    /// [`ForLt::cast_ref`], so the transmuted `'static` is never exposed to callers.
+    pub fn into_devres(self) -> Result<DevresLt<IoMem<'static, SIZE>>> {
+        // SAFETY: Casting to `'static` is sound because `DevresLt` guarantees the `IoMem` does
+        // not actually outlive the device -- access is revoked and the resource is released when
+        // the device is unbound. The `ForLt` encoding ensures `access()` shortens the lifetime
+        // back to the caller's borrow.
         let iomem: IoMem<'static, SIZE> = unsafe { core::mem::transmute(self) };
         let dev = iomem.dev;
-        Devres::new(dev, iomem)
+        DevresLt::new(dev, iomem)
     }
 }
 
