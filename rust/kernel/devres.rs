@@ -24,6 +24,7 @@ use crate::{
         Arc, //
     },
     types::{
+        ForLt,
         ForeignOwnable,
         Opaque, //
     },
@@ -122,7 +123,7 @@ struct Inner<T> {
 /// # Ok(())
 /// # }
 /// ```
-pub struct Devres<T: Send> {
+pub struct Devres<T: Send + 'static> {
     dev: ARef<Device>,
     inner: Arc<Inner<T>>,
 }
@@ -184,7 +185,7 @@ mod base {
     }
 }
 
-impl<T: Send> Devres<T> {
+impl<T: Send + 'static> Devres<T> {
     /// Creates a new [`Devres`] instance of the given `data`.
     ///
     /// The `data` encapsulated within the returned `Devres` instance' `data` will be
@@ -237,7 +238,7 @@ impl<T: Send> Devres<T> {
         })
     }
 
-    fn data(&self) -> &Revocable<T> {
+    pub(crate) fn data(&self) -> &Revocable<T> {
         &self.inner.data
     }
 
@@ -297,15 +298,19 @@ impl<T: Send> Devres<T> {
     /// #![cfg(CONFIG_PCI)]
     /// use kernel::{
     ///     device::Core,
-    ///     devres::Devres,
+    ///     devres::DevresLt,
     ///     io::{
     ///         Io,
     ///         IoKnownSize, //
     ///     },
-    ///     pci, //
+    ///     pci,
+    ///     types::ForLt, //
     /// };
     ///
-    /// fn from_core(dev: &pci::Device<Core>, devres: Devres<pci::Bar<'_, 0x4>>) -> Result {
+    /// fn from_core(
+    ///     dev: &pci::Device<Core>,
+    ///     devres: DevresLt<ForLt!(pci::Bar<'_, 0x4>)>,
+    /// ) -> Result {
     ///     let bar = devres.access(dev.as_ref())?;
     ///
     ///     let _ = bar.read32(0x0);
@@ -353,7 +358,7 @@ unsafe impl<T: Send> Send for Devres<T> {}
 // SAFETY: `Devres` can be shared with any task, if `T: Sync`.
 unsafe impl<T: Send + Sync> Sync for Devres<T> {}
 
-impl<T: Send> Drop for Devres<T> {
+impl<T: Send + 'static> Drop for Devres<T> {
     fn drop(&mut self) {
         // SAFETY: When `drop` runs, it is guaranteed that nobody is accessing the revocable data
         // anymore, hence it is safe not to wait for the grace period to finish.
@@ -366,6 +371,84 @@ impl<T: Send> Drop for Devres<T> {
                 drop(unsafe { Arc::from_raw(Arc::as_ptr(&self.inner)) });
             }
         }
+    }
+}
+
+/// Guard returned by [`DevresLt::try_access`].
+///
+/// Dereferences to `F::Of<'bound>`, applying [`ForLt::cast_ref`] to shorten the lifetime of the
+/// stored data to the guard's borrow lifetime.
+pub struct DevresGuard<'bound, F: ForLt>(RevocableGuard<'bound, F::Of<'static>>);
+
+impl<'bound, F: ForLt> core::ops::Deref for DevresGuard<'bound, F> {
+    type Target = F::Of<'bound>;
+
+    fn deref(&self) -> &Self::Target {
+        F::cast_ref(&*self.0)
+    }
+}
+
+/// Device-managed resource with [`ForLt`](trait@ForLt)-aware access.
+///
+/// `DevresLt` wraps [`Devres`] and applies [`ForLt::cast_ref`] in its access methods to shorten
+/// the stored `'static` lifetime to the caller's borrow lifetime. This prevents transmuted
+/// `'static` lifetimes from leaking to users.
+///
+/// Use this for resource types that implement [`ForLt`](trait@ForLt) and are stored with a
+/// transmuted `'static` lifetime (e.g. [`pci::Bar`]).
+///
+/// [`pci::Bar`]: crate::pci::Bar
+pub struct DevresLt<F: ForLt>(Devres<F::Of<'static>>)
+where
+    F::Of<'static>: Send;
+
+impl<F: ForLt> DevresLt<F>
+where
+    F::Of<'static>: Send,
+{
+    /// Creates a new [`DevresLt`] instance of the given `data`.
+    pub fn new<E>(dev: &Device<Bound>, data: impl PinInit<F::Of<'static>, E>) -> Result<Self>
+    where
+        Error: From<E>,
+    {
+        Ok(Self(Devres::new(dev, data)?))
+    }
+
+    /// Return a reference of the [`Device`] this [`DevresLt`] instance has been created with.
+    pub fn device(&self) -> &Device {
+        self.0.device()
+    }
+
+    /// Obtain `&'bound F::Of<'bound>`, bypassing the [`Revocable`].
+    ///
+    /// This method works like [`Devres::access`], but shortens the returned reference's lifetime
+    /// from `'static` to `'bound` via [`ForLt::cast_ref`].
+    pub fn access<'bound>(
+        &'bound self,
+        dev: &'bound Device<Bound>,
+    ) -> Result<&'bound F::Of<'bound>> {
+        self.0.access(dev).map(F::cast_ref)
+    }
+
+    /// [`DevresLt`] accessor for [`Revocable::try_access`].
+    pub fn try_access(&self) -> Option<DevresGuard<'_, F>> {
+        self.0.data().try_access().map(DevresGuard)
+    }
+
+    /// [`DevresLt`] accessor for [`Revocable::try_access_with`].
+    pub fn try_access_with<R, G>(&self, f: G) -> Option<R>
+    where
+        G: for<'bound> FnOnce(&'bound F::Of<'bound>) -> R,
+    {
+        self.0.data().try_access_with(|data| f(F::cast_ref(data)))
+    }
+
+    /// [`DevresLt`] accessor for [`Revocable::try_access_with_guard`].
+    pub fn try_access_with_guard<'bound>(
+        &'bound self,
+        guard: &'bound rcu::Guard,
+    ) -> Option<&'bound F::Of<'bound>> {
+        self.0.data().try_access_with_guard(guard).map(F::cast_ref)
     }
 }
 
