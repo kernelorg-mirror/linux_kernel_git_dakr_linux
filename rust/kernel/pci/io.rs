@@ -6,7 +6,7 @@ use super::Device;
 use crate::{
     bindings,
     device,
-    devres::Devres,
+    devres::DevresLt,
     io::{
         Io,
         IoCapable,
@@ -14,7 +14,8 @@ use crate::{
         Mmio,
         MmioRaw, //
     },
-    prelude::*, //
+    prelude::*,
+    types::ForLt, //
 };
 use core::{
     marker::PhantomData,
@@ -151,6 +152,18 @@ pub struct Bar<'bound, const SIZE: usize = 0> {
     num: i32,
 }
 
+// SAFETY: `Bar<'bound, SIZE>` is covariant over `'bound` -- it holds
+// `&'bound Device<Bound>`, which is covariant. Shortening the lifetime
+// is therefore sound.
+unsafe impl<const SIZE: usize> ForLt for Bar<'static, SIZE> {
+    type Of<'bound> = Bar<'bound, SIZE>;
+}
+
+/// A device-managed PCI BAR mapping.
+///
+/// See [`Bar::into_devres`].
+pub type DevresBar<const SIZE: usize> = DevresLt<Bar<'static, SIZE>>;
+
 impl<'bound, const SIZE: usize> Bar<'bound, SIZE> {
     pub(super) fn new(pdev: &'bound Device<device::Bound>, num: u32, name: &CStr) -> Result<Self> {
         let len = pdev.resource_len(num)?;
@@ -219,15 +232,16 @@ impl<'bound, const SIZE: usize> Bar<'bound, SIZE> {
 
     /// Consume the `Bar` and register it as a device-managed resource.
     ///
-    /// The returned `Devres<Bar<'static, SIZE>>` can outlive the original lifetime `'bound`. Access
-    /// to the BAR is revoked when the device is unbound.
-    pub fn into_devres(self) -> Result<Devres<Bar<'static, SIZE>>> {
-        // SAFETY: Casting to `'static` is sound because `Devres` guarantees the `Bar` does not
+    /// Access methods on the returned [`DevresLt`] shorten the inner lifetime via
+    /// [`ForLt::cast_ref`], so the transmuted `'static` is never exposed to callers.
+    pub fn into_devres(self) -> Result<DevresLt<Bar<'static, SIZE>>> {
+        // SAFETY: Casting to `'static` is sound because `DevresLt` guarantees the `Bar` does not
         // actually outlive the device -- access is revoked and the resource is released when the
-        // device is unbound.
+        // device is unbound. The `ForLt` encoding ensures `access()` shortens the lifetime back
+        // to the caller's borrow, preventing `'static` from leaking.
         let bar: Bar<'static, SIZE> = unsafe { core::mem::transmute(self) };
         let pdev = bar.pdev;
-        Devres::new(pdev.as_ref(), bar)
+        DevresLt::new(pdev.as_ref(), bar)
     }
 }
 
