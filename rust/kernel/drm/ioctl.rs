@@ -83,6 +83,7 @@ pub mod internal {
 ///
 /// ```ignore
 /// fn foo(device: &kernel::drm::Device<Self>,
+///        reg_data: &<Self::RegistrationData as kernel::types::ForLt>::Of<'_>,
 ///        data: &mut uapi::argument_type,
 ///        file: &kernel::drm::File<Self::File>,
 /// ) -> Result<u32>
@@ -140,7 +141,7 @@ macro_rules! declare_drm_ioctls {
                             let dev = unsafe {
                                 $crate::drm::device::Device::from_raw(raw_dev)
                             };
-                            let _guard = match $crate::drm::device::unbind_guard(dev) {
+                            let guard = match $crate::drm::device::unbind_guard(dev) {
                                 Some(g) => g,
                                 None => return $crate::error::code::ENODEV.to_errno(),
                             };
@@ -156,7 +157,7 @@ macro_rules! declare_drm_ioctls {
                             // SAFETY: This is just the DRM file structure
                             let file = unsafe { $crate::drm::File::from_raw(raw_file) };
 
-                            match $func(dev, data, file) {
+                            match $func(dev, guard.registration_data(), data, file) {
                                 Err(e) => e.to_errno(),
                                 Ok(i) => i.try_into()
                                             .unwrap_or($crate::error::code::ERANGE.to_errno()),
