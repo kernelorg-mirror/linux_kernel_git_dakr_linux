@@ -452,6 +452,13 @@ impl<T: drm::Driver> Drop for UnbindGuard<'_, T> {
     }
 }
 
+/// Free-function equivalent of [`Device::unbind_guard()`] for use in macro contexts where method
+/// resolution cannot infer the driver type.
+#[doc(hidden)]
+pub fn unbind_guard<T: drm::Driver>(dev: &Device<T, Registered>) -> Option<UnbindGuard<'_, T>> {
+    dev.unbind_guard()
+}
+
 impl<T: drm::Driver, C: DeviceContext> Deref for Device<T, C> {
     type Target = T::Data;
 
