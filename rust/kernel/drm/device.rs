@@ -23,6 +23,7 @@ use crate::{
         AlwaysRefCounted, //
     },
     types::{
+        ForLt,
         NotThreadSafe,
         Opaque, //
     },
@@ -35,6 +36,7 @@ use crate::{
 };
 use core::{
     alloc::Layout,
+    cell::UnsafeCell,
     marker::PhantomData,
     mem,
     ops::Deref,
@@ -239,6 +241,9 @@ impl<T: drm::Driver> UnregisteredDevice<T> {
             unsafe { bindings::drm_dev_put(drm_dev) };
         })?;
 
+        // SAFETY: `raw_drm` is valid; no concurrent access before registration.
+        unsafe { (*raw_drm.as_ptr()).registration_data = UnsafeCell::new(NonNull::dangling()) };
+
         // SAFETY: The reference count is one, and now we take ownership of that reference as a
         // `drm::Device`.
         // INVARIANT: We just created the device above, but have yet to call `drm_dev_register`.
@@ -270,12 +275,30 @@ impl<T: drm::Driver> UnregisteredDevice<T> {
 pub struct Device<T: drm::Driver, C: DeviceContext = Registered> {
     dev: Opaque<bindings::drm_device>,
     data: T::Data,
+    pub(super) registration_data: UnsafeCell<NonNull<<T::RegistrationData as ForLt>::Of<'static>>>,
     _ctx: PhantomData<C>,
 }
 
 impl<T: drm::Driver, C: DeviceContext> Device<T, C> {
     pub(crate) fn as_raw(&self) -> *mut bindings::drm_device {
         self.dev.get()
+    }
+
+    /// Returns a reference to the registration data with lifetime shortened
+    /// from `'static`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the parent bus device is bound. This is
+    /// typically guaranteed by holding an active `drm_dev_enter()` critical
+    /// section (e.g. via [`UnbindGuard`]).
+    #[doc(hidden)]
+    pub unsafe fn raw_registration_data(&self) -> &<T::RegistrationData as ForLt>::Of<'_> {
+        // SAFETY: Caller guarantees the parent bus device is bound, hence
+        // the pointer is valid.
+        let static_ref = unsafe { (*self.registration_data.get()).as_ref() };
+
+        T::RegistrationData::cast_ref(static_ref)
     }
 
     /// # Safety
@@ -389,6 +412,23 @@ impl<T: drm::Driver> Device<T, Registered> {
 pub struct UnbindGuard<'a, T: drm::Driver> {
     dev: &'a Device<T, Registered>,
     idx: i32,
+}
+
+impl<T: drm::Driver> UnbindGuard<'_, T> {
+    /// Returns a reference to the registration data with its lifetime shortened from `'static`
+    /// to the guard's borrow lifetime.
+    ///
+    /// The data is owned by [`Registration`](drm::driver::Registration) and is guaranteed to
+    /// remain valid for the duration of this guard, since
+    /// [`Registration`](drm::driver::Registration)'s `drop` calls
+    /// `drm_dev_unplug()` which waits for all `drm_dev_enter()` critical sections to complete.
+    pub fn registration_data(&self) -> &<T::RegistrationData as ForLt>::Of<'_> {
+        // SAFETY: The pointer was set in `Registration::new()` before `drm_dev_register()`, and
+        // is only invalidated after `drm_dev_unplug()` in `Registration::drop()`. Since we hold
+        // an active `drm_dev_enter()` critical section, the SRCU barrier in `drm_dev_unplug()`
+        // guarantees the pointer is still valid.
+        unsafe { self.dev.raw_registration_data() }
+    }
 }
 
 impl<T: drm::Driver> Deref for UnbindGuard<'_, T> {

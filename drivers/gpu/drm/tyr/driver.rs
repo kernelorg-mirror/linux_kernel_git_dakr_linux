@@ -25,7 +25,8 @@ use kernel::{
         aref::ARef,
         Mutex, //
     },
-    time, //
+    time,
+    types::ForLt, //
 };
 
 use crate::{
@@ -133,7 +134,7 @@ impl<'bound> platform::Driver<'bound> for TyrPlatformDriverData {
         });
 
         let tdev = drm::UnregisteredDevice::<TyrDrmDriver>::new(pdev, data)?;
-        let tdev = drm::driver::Registration::new_foreign_owned(tdev, pdev.as_ref(), 0)?;
+        let tdev = drm::driver::Registration::new_foreign_owned(tdev, pdev.as_ref(), (), 0)?;
 
         let driver = TyrPlatformDriverData {
             _device: tdev.into(),
@@ -175,6 +176,7 @@ const INFO: drm::DriverInfo = drm::DriverInfo {
 #[vtable]
 impl drm::Driver for TyrDrmDriver {
     type Data = TyrDrmDeviceData;
+    type RegistrationData = ForLt!(());
     type File = TyrDrmFileData;
     type Object<R: drm::DeviceContext> = drm::gem::Object<TyrObject, R>;
     type ParentDevice<Ctx: DeviceContext> = platform::Device<Ctx>;

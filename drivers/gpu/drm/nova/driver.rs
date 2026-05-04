@@ -12,7 +12,8 @@ use kernel::{
         ioctl, //
     },
     prelude::*,
-    sync::aref::ARef, //
+    sync::aref::ARef,
+    types::ForLt, //
 };
 
 use crate::file::File;
@@ -63,7 +64,7 @@ impl<'bound> auxiliary::Driver<'bound> for NovaDriver {
         let data = try_pin_init!(NovaData { adev: adev.into() });
 
         let drm = drm::UnregisteredDevice::<Self>::new(adev, data)?;
-        let drm = drm::Registration::new_foreign_owned(drm, adev.as_ref(), 0)?;
+        let drm = drm::Registration::new_foreign_owned(drm, adev.as_ref(), (), 0)?;
 
         Ok(Self { drm: drm.into() })
     }
@@ -72,6 +73,7 @@ impl<'bound> auxiliary::Driver<'bound> for NovaDriver {
 #[vtable]
 impl drm::Driver for NovaDriver {
     type Data = NovaData;
+    type RegistrationData = ForLt!(());
     type File = File;
     type Object<Ctx: drm::DeviceContext> = gem::Object<NovaObject, Ctx>;
     type ParentDevice<Ctx: DeviceContext> = auxiliary::Device<Ctx>;
