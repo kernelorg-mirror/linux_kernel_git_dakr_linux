@@ -19,6 +19,7 @@ use crate::{
         to_result, //
     },
     prelude::*,
+    sync::aref::ARef,
     types::{
         ForLt,
         ForeignOwnable,
@@ -101,11 +102,34 @@ where
         adev: *mut bindings::auxiliary_device,
         id: *const bindings::auxiliary_device_id,
     ) -> c_int {
+        type RegDataForLt<F> = <<F as ForLt>::Of<'static> as Driver<'static>>::RegistrationData;
+        type RegData<F> = <RegDataForLt<F> as ForLt>::Of<'static>;
+
+        // Validate that the stored registration data matches the type the driver expects. This
+        // runs once at probe time, allowing `Device::registration_data()` to be infallible.
+        //
+        // SAFETY: `adev` is a valid pointer to a `struct auxiliary_device`.
+        let reg_ptr = unsafe { (*adev).registration_data_rust };
+        if TypeId::of::<RegData<F>>() != TypeId::of::<()>() {
+            if reg_ptr.is_null() {
+                return ENODEV.to_errno();
+            }
+
+            // SAFETY: `reg_ptr` is non-null; `RegistrationData` is `#[repr(C)]` with
+            // `type_id` at offset 0, so reading a `TypeId` is valid regardless of `F`.
+            let stored = unsafe { reg_ptr.cast::<TypeId>().read() };
+            if stored != TypeId::of::<RegData<F>>() {
+                return ENODEV.to_errno();
+            }
+        }
+
         // SAFETY: The auxiliary bus only ever calls the probe callback with a valid pointer to a
-        // `struct auxiliary_device`.
+        // `struct auxiliary_device`. `Device` is covariant in `R`, so storing the `'static`
+        // version of the registration data type is sound — the compiler narrows it through
+        // subtyping when `probe()` borrows the device.
         //
         // INVARIANT: `adev` is valid for the duration of `probe_callback()`.
-        let adev = unsafe { &*adev.cast::<Device<device::CoreInternal>>() };
+        let adev = unsafe { &*adev.cast::<Device<device::CoreInternal, RegData<F>>>() };
 
         // SAFETY: `DeviceId` is a `#[repr(transparent)`] wrapper of `struct auxiliary_device_id`
         // and does not add additional invariants, so it's safe to transmute.
@@ -121,11 +145,14 @@ where
     }
 
     extern "C" fn remove_callback(adev: *mut bindings::auxiliary_device) {
+        type RegDataForLt<F> = <<F as ForLt>::Of<'static> as Driver<'static>>::RegistrationData;
+        type RegData<F> = <RegDataForLt<F> as ForLt>::Of<'static>;
+
         // SAFETY: The auxiliary bus only ever calls the probe callback with a valid pointer to a
         // `struct auxiliary_device`.
         //
         // INVARIANT: `adev` is valid for the duration of `remove_callback()`.
-        let adev = unsafe { &*adev.cast::<Device<device::CoreInternal>>() };
+        let adev = unsafe { &*adev.cast::<Device<device::CoreInternal, RegData<F>>>() };
 
         // SAFETY: `remove_callback` is only ever called after a successful call to
         // `probe_callback`, hence it's guaranteed that drvdata has been set.
@@ -222,14 +249,25 @@ pub trait Driver<'bound>: Send {
     /// type IdInfo: 'static = ();
     type IdInfo: 'static;
 
+    /// The [`ForLt`](trait@ForLt) encoding of the registration data type set
+    /// by the parent driver. The framework validates this against the stored
+    /// [`TypeId`] before calling [`Driver::probe`]; if the type does not
+    /// match, the device is not bound to the driver.
+    ///
+    /// TODO: Use associated_type_defaults once stabilized:
+    ///
+    /// type RegistrationData: ForLt = ForLt!(());
+    type RegistrationData: ForLt;
+
     /// The table of device ids supported by the driver.
     const ID_TABLE: IdTable<Self::IdInfo>;
 
     /// Auxiliary driver probe.
     ///
-    /// Called when an auxiliary device is matches a corresponding driver.
+    /// Called when an auxiliary device matches this driver and the registration
+    /// data type has been validated.
     fn probe(
-        dev: &'bound Device<device::Core>,
+        dev: &'bound Device<device::Core, <Self::RegistrationData as ForLt>::Of<'bound>>,
         id_info: &'bound Self::IdInfo,
     ) -> impl PinInit<Self, Error> + 'bound;
 
@@ -243,7 +281,10 @@ pub trait Driver<'bound>: Send {
     /// operations to gracefully tear down the device.
     ///
     /// Otherwise, release operations for driver resources should be performed in `Self::drop`.
-    fn unbind(dev: &'bound Device<device::Core>, this: Pin<&'bound Self>) {
+    fn unbind(
+        dev: &'bound Device<device::Core, <Self::RegistrationData as ForLt>::Of<'bound>>,
+        this: Pin<&'bound Self>,
+    ) {
         let _ = (dev, this);
     }
 }
@@ -254,17 +295,23 @@ pub trait Driver<'bound>: Send {
 /// implementation abstracts the usage of an already existing C `struct auxiliary_device` within
 /// Rust code that we get passed from the C side.
 ///
+/// The type parameter `R` is the concrete registration data type set by the
+/// parent driver. The framework sets `R` to the `'static`-erased variant at
+/// probe time after validating the [`TypeId`]; `Device` is covariant in `R`,
+/// so borrows naturally shorten any lifetime in `R` to the reference's
+/// lifetime.
+///
 /// # Invariants
 ///
 /// A [`Device`] instance represents a valid `struct auxiliary_device` created by the C portion of
 /// the kernel.
 #[repr(transparent)]
-pub struct Device<Ctx: device::DeviceContext = device::Normal>(
+pub struct Device<Ctx: device::DeviceContext = device::Normal, R = ()>(
     Opaque<bindings::auxiliary_device>,
-    PhantomData<Ctx>,
+    PhantomData<(Ctx, R)>,
 );
 
-impl<Ctx: device::DeviceContext> Device<Ctx> {
+impl<Ctx: device::DeviceContext, R> Device<Ctx, R> {
     fn as_raw(&self) -> *mut bindings::auxiliary_device {
         self.0.get()
     }
@@ -275,9 +322,17 @@ impl<Ctx: device::DeviceContext> Device<Ctx> {
         // `struct auxiliary_device`.
         unsafe { (*self.as_raw()).id }
     }
+
+    /// Erases the registration data type parameter, returning a reference to
+    /// the untyped device.
+    pub fn as_untyped(&self) -> &Device<Ctx> {
+        // SAFETY: `Device` is `#[repr(transparent)]`; `R` only appears in
+        // `PhantomData` and does not affect layout.
+        unsafe { &*core::ptr::from_ref(self).cast() }
+    }
 }
 
-impl Device<device::Bound> {
+impl<R> Device<device::Bound, R> {
     /// Returns a bound reference to the parent [`device::Device`].
     pub fn parent(&self) -> &device::Device<device::Bound> {
         let parent = (**self).parent();
@@ -285,58 +340,43 @@ impl Device<device::Bound> {
         // SAFETY: A bound auxiliary device always has a bound parent device.
         unsafe { parent.as_bound() }
     }
+}
 
-    /// Returns a pinned reference to the registration data set by the registering (parent) driver.
+impl<R> Device<device::Bound, R> {
+    /// Returns a pinned reference to the registration data set by the
+    /// registering (parent) driver.
     ///
-    /// `F` is the [`ForLt`](trait@ForLt) encoding of the data type. The returned
-    /// reference has its lifetime shortened from `'static` to `&self`'s borrow lifetime via
-    /// [`ForLt::cast_ref`].
+    /// This accessor is infallible: the framework validates the registration
+    /// data [`TypeId`] during probe, so the type is guaranteed to match `R`.
     ///
-    /// Returns [`EINVAL`] if `F` does not match the type used by the parent driver when calling
-    /// [`Registration::new()`].
-    ///
-    /// Returns [`ENOENT`] if no registration data has been set, e.g. when the device was
-    /// registered by a C driver.
-    pub fn registration_data<F: ForLt>(&self) -> Result<Pin<&F::Of<'_>>> {
+    /// `Device` is covariant in `R`, so the borrow naturally shortens any
+    /// lifetime in `R` from `'static` (storage) to the device reference's
+    /// lifetime.
+    pub fn registration_data(&self) -> Pin<&R> {
         // SAFETY: By the type invariant, `self.as_raw()` is a valid `struct auxiliary_device`.
+        // The probe callback validated the `TypeId` and confirmed a non-null pointer.
         let ptr = unsafe { (*self.as_raw()).registration_data_rust };
-        if ptr.is_null() {
-            dev_warn!(
-                self.as_ref(),
-                "No registration data set; parent is not a Rust driver.\n"
-            );
-            return Err(ENOENT);
+
+        // SAFETY: `ptr` was validated during probe and points to a valid
+        // `RegistrationData<_>`. The stored data is the `'static` version of `R`;
+        // lifetimes do not affect layout, so the cast is valid. `data` is a
+        // structurally pinned field of `RegistrationData`.
+        unsafe {
+            let data = &(*ptr.cast::<RegistrationData<R>>()).data;
+            Pin::new_unchecked(data)
         }
-
-        // SAFETY: `ptr` is non-null and was set via `into_foreign()` in `Registration::new()`;
-        // `RegistrationData` is `#[repr(C)]` with `type_id` at offset 0, so reading a `TypeId`
-        // at the start of the allocation is valid regardless of `F`.
-        let type_id = unsafe { ptr.cast::<TypeId>().read() };
-        if type_id != TypeId::of::<F::Of<'static>>() {
-            return Err(EINVAL);
-        }
-
-        // SAFETY: The `TypeId` check above confirms that the stored type matches
-        // `F::Of<'static>`; `ptr` remains valid until `Registration::drop()` calls
-        // `from_foreign()`.
-        let wrapper = unsafe { Pin::<KBox<RegistrationData<F::Of<'static>>>>::borrow(ptr) };
-
-        // SAFETY: `data` is a structurally pinned field of `RegistrationData`.
-        let pinned: Pin<&F::Of<'static>> = unsafe { wrapper.map_unchecked(|w| &w.data) };
-
-        // SAFETY: The data was pinned when stored; `cast_ref` only shortens
-        // the lifetime, so the pinning guarantee is preserved.
-        Ok(unsafe { Pin::new_unchecked(F::cast_ref(pinned.get_ref())) })
     }
 }
 
-impl Device {
+impl<R> Device<device::Normal, R> {
     /// Returns a reference to the parent [`device::Device`].
     pub fn parent(&self) -> &device::Device {
         // SAFETY: A `struct auxiliary_device` always has a parent.
         unsafe { self.as_ref().parent().unwrap_unchecked() }
     }
+}
 
+impl Device {
     extern "C" fn release(dev: *mut bindings::device) {
         // SAFETY: By the type invariant `self.0.as_raw` is a pointer to the `struct device`
         // embedded in `struct auxiliary_device`.
@@ -350,17 +390,56 @@ impl Device {
 
 // SAFETY: `auxiliary::Device` is a transparent wrapper of `struct auxiliary_device`.
 // The offset is guaranteed to point to a valid device field inside `auxiliary::Device`.
-unsafe impl<Ctx: device::DeviceContext> device::AsBusDevice<Ctx> for Device<Ctx> {
+unsafe impl<Ctx: device::DeviceContext, R> device::AsBusDevice<Ctx> for Device<Ctx, R> {
     const OFFSET: usize = offset_of!(bindings::auxiliary_device, dev);
 }
 
-// SAFETY: `Device` is a transparent wrapper of a type that doesn't depend on `Device`'s generic
-// argument.
-kernel::impl_device_context_deref!(unsafe { Device });
-kernel::impl_device_context_into_aref!(Device);
+// `Device` is a `#[repr(transparent)]` wrapper of `Opaque<auxiliary_device>` with phantom data;
+// `Ctx` and `R` do not affect the layout. The deref impls below mirror what
+// `impl_device_context_deref!` generates but are generic over `R`.
+macro_rules! impl_aux_device_context_deref {
+    ($src:ty => $dst:ty) => {
+        impl<R> ::core::ops::Deref for Device<$src, R> {
+            type Target = Device<$dst, R>;
+
+            fn deref(&self) -> &Self::Target {
+                let ptr: *const Self = self;
+
+                // CAST: `Device<$src, R>` and `Device<$dst, R>` transparently wrap the same
+                // type; `$src`, `$dst`, and `R` are all zero-sized.
+                let ptr = ptr.cast::<Self::Target>();
+
+                // SAFETY: `ptr` was derived from `&self`.
+                unsafe { &*ptr }
+            }
+        }
+    };
+}
+
+impl_aux_device_context_deref!(device::CoreInternal => device::Core);
+impl_aux_device_context_deref!(device::Core => device::Bound);
+impl_aux_device_context_deref!(device::Bound => device::Normal);
+
+impl<R> From<&Device<device::CoreInternal, R>> for ARef<Device> {
+    fn from(dev: &Device<device::CoreInternal, R>) -> Self {
+        dev.as_untyped().into()
+    }
+}
+
+impl<R> From<&Device<device::Core, R>> for ARef<Device> {
+    fn from(dev: &Device<device::Core, R>) -> Self {
+        dev.as_untyped().into()
+    }
+}
+
+impl<R> From<&Device<device::Bound, R>> for ARef<Device> {
+    fn from(dev: &Device<device::Bound, R>) -> Self {
+        dev.as_untyped().into()
+    }
+}
 
 // SAFETY: Instances of `Device` are always reference-counted.
-unsafe impl crate::sync::aref::AlwaysRefCounted for Device {
+unsafe impl<R> crate::sync::aref::AlwaysRefCounted for Device<device::Normal, R> {
     fn inc_ref(&self) {
         // SAFETY: The existence of a shared reference guarantees that the refcount is non-zero.
         unsafe { bindings::get_device(self.as_ref().as_raw()) };
@@ -379,7 +458,7 @@ unsafe impl crate::sync::aref::AlwaysRefCounted for Device {
     }
 }
 
-impl<Ctx: device::DeviceContext> AsRef<device::Device<Ctx>> for Device<Ctx> {
+impl<Ctx: device::DeviceContext, R> AsRef<device::Device<Ctx>> for Device<Ctx, R> {
     fn as_ref(&self) -> &device::Device<Ctx> {
         // SAFETY: By the type invariant of `Self`, `self.as_raw()` is a pointer to a valid
         // `struct auxiliary_device`.
@@ -391,15 +470,15 @@ impl<Ctx: device::DeviceContext> AsRef<device::Device<Ctx>> for Device<Ctx> {
 }
 
 // SAFETY: A `Device` is always reference-counted and can be released from any thread.
-unsafe impl Send for Device {}
+unsafe impl<R> Send for Device<device::Normal, R> {}
 
 // SAFETY: `Device` can be shared among threads because all methods of `Device`
 // (i.e. `Device<Normal>) are thread safe.
-unsafe impl Sync for Device {}
+unsafe impl<R> Sync for Device<device::Normal, R> {}
 
 // SAFETY: Same as `Device<Normal>` -- the underlying `struct auxiliary_device` is the same;
 // `Bound` is a zero-sized type-state marker that does not affect thread safety.
-unsafe impl Sync for Device<device::Bound> {}
+unsafe impl<R> Sync for Device<device::Bound, R> {}
 
 /// Wrapper that stores a [`TypeId`] alongside the registration data for runtime type checking.
 #[repr(C)]

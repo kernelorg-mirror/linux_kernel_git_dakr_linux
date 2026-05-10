@@ -32,11 +32,12 @@ kernel::auxiliary_device_table!(
 
 impl<'bound> auxiliary::Driver<'bound> for AuxiliaryDriver {
     type IdInfo = ();
+    type RegistrationData = ForLt!(Data<'_>);
 
     const ID_TABLE: auxiliary::IdTable<Self::IdInfo> = &AUX_TABLE;
 
     fn probe(
-        adev: &'bound auxiliary::Device<Core>,
+        adev: &'bound auxiliary::Device<Core, Data<'bound>>,
         _info: &'bound Self::IdInfo,
     ) -> impl PinInit<Self, Error> + 'bound {
         dev_info!(
@@ -104,8 +105,8 @@ impl<'bound> pci::Driver<'bound> for ParentDriver {
 }
 
 impl ParentDriver {
-    fn connect(adev: &auxiliary::Device<Bound>) -> Result {
-        let data = adev.registration_data::<ForLt!(Data<'_>)>()?;
+    fn connect(adev: &auxiliary::Device<Bound, Data<'_>>) -> Result {
+        let data = adev.registration_data();
         let pdev = data.parent;
 
         dev_info!(

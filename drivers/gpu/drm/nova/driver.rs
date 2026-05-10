@@ -55,6 +55,7 @@ kernel::auxiliary_device_table!(
 
 impl<'bound> auxiliary::Driver<'bound> for NovaDriver {
     type IdInfo = ();
+    type RegistrationData = ForLt!(());
     const ID_TABLE: auxiliary::IdTable<Self::IdInfo> = &AUX_TABLE;
 
     fn probe(
