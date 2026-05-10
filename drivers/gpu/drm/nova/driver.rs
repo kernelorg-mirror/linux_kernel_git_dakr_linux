@@ -3,6 +3,7 @@
 use kernel::{
     auxiliary,
     device::{
+        Bound,
         Core,
         DeviceContext, //
     },
@@ -11,6 +12,7 @@ use kernel::{
         gem,
         ioctl, //
     },
+    pci,
     prelude::*,
     sync::aref::ARef,
     types::ForLt, //
@@ -26,6 +28,17 @@ pub(crate) struct NovaDriver {
 
 /// Convienence type alias for the DRM device type for this driver
 pub(crate) type NovaDevice<Ctx = drm::Registered> = drm::Device<NovaDriver, Ctx>;
+
+/// Registration data provided by nova-core (the parent driver) when registering the auxiliary
+/// device. Holds a reference to the parent PCI device for the GPU's bound lifetime.
+pub(crate) struct ParentRegData<'bound> {
+    pub(crate) pdev: &'bound pci::Device<Bound>,
+}
+
+/// DRM registration data, accessible from ioctl handlers via the [`drm::device::UnbindGuard`].
+pub(crate) struct DrmData<'bound> {
+    pub(crate) adev: &'bound auxiliary::Device<Bound, ParentRegData<'bound>>,
+}
 
 #[pin_data]
 pub(crate) struct NovaData {
@@ -55,17 +68,26 @@ kernel::auxiliary_device_table!(
 
 impl<'bound> auxiliary::Driver<'bound> for NovaDriver {
     type IdInfo = ();
-    type RegistrationData = ForLt!(());
+    type RegistrationData = ForLt!(ParentRegData<'_>);
     const ID_TABLE: auxiliary::IdTable<Self::IdInfo> = &AUX_TABLE;
 
     fn probe(
-        adev: &'bound auxiliary::Device<Core>,
+        adev: &'bound auxiliary::Device<Core, ParentRegData<'bound>>,
         _info: &'bound Self::IdInfo,
     ) -> impl PinInit<Self, Error> + 'bound {
-        let data = try_pin_init!(NovaData { adev: adev.into() });
+        let reg_data = adev.registration_data();
+        dev_info!(
+            reg_data.pdev,
+            "nova-drm: probing with PCI parent VendorID={}, DeviceID={:#x}\n",
+            reg_data.pdev.vendor_id(),
+            reg_data.pdev.device_id()
+        );
 
-        let drm = drm::UnregisteredDevice::<Self>::new(adev, data)?;
-        let drm = drm::Registration::new_foreign_owned(drm, adev.as_ref(), (), 0)?;
+        let drm_data = DrmData { adev };
+
+        let data = try_pin_init!(NovaData { adev: adev.into() });
+        let drm = drm::UnregisteredDevice::<Self>::new(adev.as_untyped(), data)?;
+        let drm = drm::Registration::new_foreign_owned(drm, adev.as_ref(), drm_data, 0)?;
 
         Ok(Self { drm: drm.into() })
     }
@@ -74,7 +96,7 @@ impl<'bound> auxiliary::Driver<'bound> for NovaDriver {
 #[vtable]
 impl drm::Driver for NovaDriver {
     type Data = NovaData;
-    type RegistrationData = ForLt!(());
+    type RegistrationData = ForLt!(DrmData<'_>);
     type File = File;
     type Object<Ctx: drm::DeviceContext> = gem::Object<NovaObject, Ctx>;
     type ParentDevice<Ctx: DeviceContext> = auxiliary::Device<Ctx>;

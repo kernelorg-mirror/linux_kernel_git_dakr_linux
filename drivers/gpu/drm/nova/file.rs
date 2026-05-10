@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 
-use crate::driver::{NovaDevice, NovaDriver};
+use crate::driver::{
+    DrmData,
+    NovaDevice,
+    NovaDriver,
+    ParentRegData, //
+};
 use crate::gem::NovaObject;
 use kernel::{
     alloc::flags::*,
@@ -27,13 +32,17 @@ impl File {
     pub(crate) fn get_param(
         dev: &NovaDevice,
         _adev: &auxiliary::Device<Bound>,
-        _reg_data: &(),
+        reg_data: &DrmData<'_>,
         getparam: &mut uapi::drm_nova_getparam,
         _file: &drm::File<File>,
     ) -> Result<u32> {
         let adev = &dev.adev;
         let parent = adev.parent();
         let pdev: &pci::Device = parent.try_into()?;
+
+        // With this the parent driver can obtain its registration data (`ParentRegData`)
+        // infallibly.
+        let _adev: &'_ auxiliary::Device<Bound, ParentRegData<'_>> = reg_data.adev;
 
         let value = match getparam.param as u32 {
             uapi::NOVA_GETPARAM_VRAM_BAR_SIZE => pdev.resource_len(1)?,
@@ -49,7 +58,7 @@ impl File {
     pub(crate) fn gem_create(
         dev: &NovaDevice,
         _adev: &auxiliary::Device<Bound>,
-        _reg_data: &(),
+        _reg_data: &DrmData<'_>,
         req: &mut uapi::drm_nova_gem_create,
         file: &drm::File<File>,
     ) -> Result<u32> {
@@ -64,7 +73,7 @@ impl File {
     pub(crate) fn gem_info(
         _dev: &NovaDevice,
         _adev: &auxiliary::Device<Bound>,
-        _reg_data: &(),
+        _reg_data: &DrmData<'_>,
         req: &mut uapi::drm_nova_gem_info,
         file: &drm::File<File>,
     ) -> Result<u32> {
