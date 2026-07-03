@@ -10,6 +10,7 @@ use kernel::{
     InPlaceModule, //
 };
 
+pub mod auxdata;
 mod driver;
 mod falcon;
 mod fb;
