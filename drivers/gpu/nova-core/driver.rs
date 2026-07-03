@@ -112,7 +112,7 @@ impl pci::Driver for NovaCoreDriver {
                             // (`try_pin_init!()` initializes fields in declaration order), lives at
                             // a pinned stable address, and is dropped after `_reg` (struct field
                             // drop order).
-                            _gpu: &*core::ptr::from_ref(&this.as_ref().gpu),
+                            gpu: &*core::ptr::from_ref(&this.as_ref().gpu),
                         },
                     )?
                 },

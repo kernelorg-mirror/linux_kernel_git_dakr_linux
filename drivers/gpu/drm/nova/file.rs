@@ -16,6 +16,9 @@ use kernel::{
     uapi,
 };
 
+use kernel::types::CovariantForLt;
+use nova_core::auxdata::AuxData;
+
 pub(crate) struct File;
 
 impl drm::file::DriverFile for File {
@@ -36,9 +39,11 @@ impl File {
     ) -> Result<u32> {
         let adev: &auxiliary::Device<Bound> = dev.as_ref();
         let pdev: &pci::Device<Bound> = adev.parent().try_into()?;
+        let data = adev.registration_data::<CovariantForLt!(AuxData<'_>)>()?;
 
         let value = match getparam.param as u32 {
             uapi::NOVA_GETPARAM_VRAM_BAR_SIZE => pdev.resource_len(1)?,
+            uapi::NOVA_GETPARAM_GPU_CHIPSET => data.chipset() as u64,
             _ => return Err(EINVAL),
         };
 
