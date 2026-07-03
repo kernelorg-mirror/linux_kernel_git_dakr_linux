@@ -44,6 +44,7 @@ impl File {
         let value = match getparam.param as u32 {
             uapi::NOVA_GETPARAM_VRAM_BAR_SIZE => pdev.resource_len(1)?,
             uapi::NOVA_GETPARAM_GPU_CHIPSET => data.chipset() as u64,
+            uapi::NOVA_GETPARAM_VRAM_SIZE => data.vram_size(),
             _ => return Err(EINVAL),
         };
 
