@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
+use core::pin::Pin;
+
 use kernel::{
     auxiliary,
     device::{
@@ -17,6 +19,7 @@ use kernel::{
 
 use crate::file::File;
 use crate::gem::NovaObject;
+use nova_core::api::NovaCoreApi;
 
 pub(crate) struct NovaDriver;
 
@@ -24,6 +27,11 @@ pub(crate) struct Nova<'bound> {
     #[expect(unused)]
     drm: ARef<drm::Device<NovaDriver>>,
     _reg: drm::Registration<'bound, NovaDriver>,
+}
+
+/// DRM registration data, accessible from ioctl handlers via the registration guard.
+pub(crate) struct DrmRegData<'bound> {
+    pub(crate) api: Pin<&'bound NovaCoreApi<'bound>>,
 }
 
 /// Convienence type alias for the DRM device type for this driver
@@ -59,10 +67,15 @@ impl auxiliary::Driver for NovaDriver {
         adev: &'bound auxiliary::Device<Core<'_>>,
         _info: &'bound Self::IdInfo,
     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
+        let api = NovaCoreApi::of(adev)?;
+
         let drm = drm::UnregisteredDevice::<Self>::new(adev, Ok(()))?;
+
+        let drm_data = DrmRegData { api };
+
         // SAFETY: `reg` is stored in `Nova` and dropped when the driver is unbound; it is
         // never forgotten.
-        let reg = unsafe { drm::Registration::new(adev.as_ref(), drm, (), 0)? };
+        let reg = unsafe { drm::Registration::new(adev.as_ref(), drm, drm_data, 0)? };
 
         Ok(Nova {
             drm: reg.device().into(),
@@ -74,7 +87,7 @@ impl auxiliary::Driver for NovaDriver {
 #[vtable]
 impl drm::Driver for NovaDriver {
     type Data = ();
-    type RegistrationData<'a> = ();
+    type RegistrationData<'a> = DrmRegData<'a>;
     type File = File;
     type Object = gem::Object<NovaObject>;
     type ParentDevice<Ctx: DeviceContext> = auxiliary::Device<Ctx>;

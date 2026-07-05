@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
+use core::pin::Pin;
+
 use kernel::{
     auxiliary,
     device::Core,
@@ -18,7 +20,7 @@ use kernel::{
     types::CovariantForLt,
 };
 
-use crate::auxdata::AuxData;
+use crate::api::NovaCoreApi;
 use crate::gpu::Gpu;
 
 /// Counter for generating unique auxiliary device IDs.
@@ -30,7 +32,7 @@ pub(crate) struct NovaCore<'bound> {
     // device before dropping `gpu`, and drop `gpu` before `bar` because `Gpu`
     // borrows `bar`.
     #[allow(clippy::type_complexity)]
-    _reg: auxiliary::Registration<'bound, CovariantForLt!(AuxData<'_>)>,
+    _reg: auxiliary::Registration<'bound, CovariantForLt!(NovaCoreApi<'_>)>,
     #[pin]
     pub(crate) gpu: Gpu<'bound>,
     bar: pci::Bar<'bound, BAR0_SIZE>,
@@ -82,7 +84,7 @@ impl pci::Driver for NovaCoreDriver {
             pdev.enable_device_mem()?;
             pdev.set_master();
 
-            Ok(try_pin_init!(&this in NovaCore {
+            Ok(try_pin_init!(NovaCore {
                 bar: pdev.iomap_region_sized::<BAR0_SIZE>(0, c"nova-core/bar0")?,
                 // TODO: Use `&bar` self-referential pin-init syntax once available.
                 //
@@ -105,14 +107,16 @@ impl pci::Driver for NovaCoreDriver {
                         // For now, use a simple atomic counter that never recycles IDs.
                         AUXILIARY_ID_COUNTER.fetch_add(1, Relaxed),
                         crate::MODULE_NAME,
-                        AuxData {
+                        NovaCoreApi {
                             // TODO: Use `&gpu` self-referential pin-init syntax once available.
                             //
-                            // SAFETY: `this.gpu` is initialized before this expression is evaluated
+                            // SAFETY: `gpu` is initialized before this expression is evaluated
                             // (`try_pin_init!()` initializes fields in declaration order), lives at
                             // a pinned stable address, and is dropped after `_reg` (struct field
                             // drop order).
-                            gpu: &*core::ptr::from_ref(&this.as_ref().gpu),
+                            gpu: Pin::new_unchecked(
+                                &*core::ptr::from_ref(gpu.as_ref().get_ref()),
+                            ),
                         },
                     )?
                 },
