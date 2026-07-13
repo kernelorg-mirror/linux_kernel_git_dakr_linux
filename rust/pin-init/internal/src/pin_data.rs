@@ -76,10 +76,8 @@ pub(crate) fn pin_data(
         }
     };
 
-    // Handling cfg can gets very complicated, especially for tuple structs. Therefore, resolve all
-    // field cfgs first before continuing.
-    //
-    // We need to perform this after parsing so we can reliably detect field cfgs.
+    // Handling cfg can gets very complicated, especially for tuple structs.
+    // Therefore, resolve all field cfgs first before continuing.
     for (field_idx, field) in struct_.fields.iter_mut().enumerate() {
         let cfg: Vec<_> = field
             .attrs
@@ -112,8 +110,6 @@ pub(crate) fn pin_data(
         let cfg_false_struct = quote!(#struct_);
 
         // Resolve one field at a time until we've got no more field cfgs.
-        //
-        // This is linear time because macro invocations with false cfg will not be expanded.
         return Ok(quote!(
             #[cfg(all(#(#cfg,)*))]
             #[::pin_init::pin_data(#args)]
