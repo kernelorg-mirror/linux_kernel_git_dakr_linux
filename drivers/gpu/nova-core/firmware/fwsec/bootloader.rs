@@ -23,7 +23,6 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     falcon::{
         self,
         gsp::Gsp,
@@ -44,6 +43,7 @@ use crate::{
             Tlv,
         },
     },
+    gpu::Bar0,
     gpu::Chipset,
     num::FromSafeCast, //
     regs,

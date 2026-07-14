@@ -16,13 +16,13 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     firmware::{
         fwsec::Bcrt30Rsa3kSignature,
         FalconUCodeDesc,
         FalconUCodeDescV2,
         FalconUCodeDescV3, //
     },
+    gpu::Bar0,
     num::FromSafeCast,
 };
 

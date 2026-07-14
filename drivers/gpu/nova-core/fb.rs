@@ -19,8 +19,8 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     firmware::gsp::GspFirmware,
+    gpu::Bar0,
     gpu::Chipset,
     gsp,
     num::FromSafeCast,

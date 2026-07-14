@@ -41,7 +41,7 @@ use continuation::{
 use pin_init::pin_init_scope;
 
 use crate::{
-    driver::Bar0,
+    gpu::Bar0,
     gsp::{
         fw::{
             GspMsgElement,

@@ -36,13 +36,13 @@ pub(crate) use fw::{
 pub(crate) use hal::boot_firmware_files;
 
 use crate::{
-    driver::Bar0,
     falcon::{
         gsp::Gsp as GspFalcon,
         sec2::Sec2 as Sec2Falcon,
         Falcon, //
     },
     fsp::Fsp,
+    gpu::Bar0,
     gpu::Chipset,
     gsp::{
         cmdq::Cmdq,

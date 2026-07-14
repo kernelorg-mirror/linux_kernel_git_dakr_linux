@@ -9,11 +9,11 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     fb::{
         hal::FbHal,
         regs, //
     },
+    gpu::Bar0,
 };
 
 struct Gh100;

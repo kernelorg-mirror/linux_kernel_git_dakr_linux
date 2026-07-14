@@ -8,7 +8,7 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
+    gpu::Bar0,
     gpu::{
         Architecture,
         Chipset, //

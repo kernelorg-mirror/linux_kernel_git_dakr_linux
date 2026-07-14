@@ -26,7 +26,6 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     falcon::{
         fsp::Fsp as FspEngine,
         Falcon, //
@@ -36,6 +35,7 @@ use crate::{
         FmcSignatures,
         FspFirmware, //
     },
+    gpu::Bar0,
     gpu::Chipset,
     gsp::{
         GspFmcBootParams,

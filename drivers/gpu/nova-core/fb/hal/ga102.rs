@@ -7,8 +7,8 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     fb::hal::FbHal,
+    gpu::Bar0,
     regs, //
 };
 

@@ -11,7 +11,6 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     falcon::{
         gsp::Gsp as GspEngine,
         sec2::Sec2,
@@ -33,6 +32,7 @@ use crate::{
         },
         gsp::GspFirmware, //
     },
+    gpu::Bar0,
     gpu::Chipset,
     gsp::{
         hal::{

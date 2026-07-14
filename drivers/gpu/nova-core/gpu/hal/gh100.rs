@@ -7,7 +7,7 @@ use kernel::{
     prelude::*, //
 };
 
-use crate::driver::Bar0;
+use crate::gpu::Bar0;
 
 use super::GpuHal;
 

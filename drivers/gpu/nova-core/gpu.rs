@@ -10,13 +10,12 @@ use kernel::{
     num::Bounded,
     pci,
     prelude::*,
-    sizes::SizeConstants,
+    sizes::{SizeConstants, SZ_16M},
     uapi, //
 };
 
 use crate::{
     bounded_enum,
-    driver::Bar0,
     falcon::{
         gsp::Gsp as GspFalcon,
         sec2::Sec2 as Sec2Falcon,
@@ -35,6 +34,10 @@ use crate::{
 };
 
 mod hal;
+
+pub(crate) const BAR0_SIZE: usize = SZ_16M;
+
+pub(crate) type Bar0<'a> = &'a pci::Bar<'a, BAR0_SIZE>;
 
 macro_rules! define_chipset {
     ({ $($variant:ident = $value:literal),* $(,)* }) =>
@@ -294,19 +297,22 @@ struct GspResources<'gpu> {
 
 /// Structure holding the resources required to operate the GPU.
 #[pin_data]
-pub(crate) struct Gpu<'gpu> {
+pub(crate) struct Gpu<'bound> {
     pub(crate) spec: Spec,
     /// Static GPU information as provided by the GSP.
     pub(crate) gsp_static_info: GetGspStaticInfoReply,
     /// GSP and its resources.
     #[pin]
-    gsp_resources: GspResources<'gpu>,
+    #[not_covariant]
+    gsp_resources: GspResources<'bar>,
     /// System memory page required for flushing all pending GPU-side memory writes done through
     /// PCIE into system memory, via sysmembar (A GPU-initiated HW memory-barrier operation).
     ///
     /// Must be kept declared *after* `gsp_resources`, as the latter's `PinnedDrop` implementation
     /// requires the sysmem flush page to be in place.
-    sysmem_flush: SysmemFlush<'gpu>,
+    sysmem_flush: SysmemFlush<'bar>,
+    /// MMIO mapping of PCI BAR 0.
+    bar: pci::Bar<'bound, BAR0_SIZE>,
 }
 
 #[pinned_drop]
@@ -337,14 +343,15 @@ impl PinnedDrop for GspResources<'_> {
     }
 }
 
-impl<'gpu> Gpu<'gpu> {
+impl<'bound> Gpu<'bound> {
     pub(crate) fn new<'a>(
-        pdev: &'gpu pci::Device<device::Core<'a>>,
-        bar: Bar0<'gpu>,
-    ) -> impl PinInit<Self, Error> + use<'gpu, 'a> {
+        pdev: &'bound pci::Device<device::Core<'a>>,
+        bar: pci::Bar<'bound, BAR0_SIZE>,
+    ) -> impl PinInit<Self, Error> + use<'bound, 'a> {
         let dev = pdev.as_ref();
 
         try_pin_init!(Self {
+            bar,
             spec: Spec::new(dev, bar).inspect(|spec| {
                 dev_info!(dev,"NVIDIA ({})\n", spec);
             })?,

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 use crate::{
-    driver::Bar0,
+    gpu::Bar0,
     gpu::{
         Architecture,
         Chipset, //

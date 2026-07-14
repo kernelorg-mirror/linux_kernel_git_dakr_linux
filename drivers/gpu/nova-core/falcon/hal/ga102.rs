@@ -17,7 +17,6 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     falcon::{
         hal::LoadMethod,
         Falcon,
@@ -26,6 +25,7 @@ use crate::{
         FalconModSelAlgo,
         PeregrineCoreSelect, //
     },
+    gpu::Bar0,
     regs,
 };
 

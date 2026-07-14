@@ -20,12 +20,12 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     falcon::{
         gsp::Gsp,
         sec2::Sec2,
         Falcon, //
     },
+    gpu::Bar0,
     gsp::{
         cmdq::{
             Cmdq,

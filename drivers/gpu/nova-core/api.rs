@@ -20,9 +20,9 @@ use crate::gpu::{
 };
 
 /// API handle for the auxiliary bus child drivers to interact with nova-core.
-pub struct NovaCoreApi<'bound> {
-    pub(crate) gpu: Pin<&'bound Gpu<'bound>>,
-    pub(crate) pdev: &'bound pci::Device<Bound>,
+pub struct NovaCoreApi<'api> {
+    pub(crate) gpu: &'api Gpu<'api>,
+    pub(crate) pdev: &'api pci::Device<Bound>,
 }
 
 impl NovaCoreApi<'_> {

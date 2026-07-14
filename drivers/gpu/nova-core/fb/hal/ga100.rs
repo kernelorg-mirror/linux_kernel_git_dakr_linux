@@ -8,11 +8,11 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     fb::{
         hal::FbHal,
         regs, //
     },
+    gpu::Bar0,
 };
 
 use super::tu102::FLUSH_SYSMEM_ADDR_SHIFT;

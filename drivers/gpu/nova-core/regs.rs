@@ -13,7 +13,6 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     falcon::{
         DmaTrfCmdSize,
         FalconCoreRev,
@@ -28,6 +27,7 @@ use crate::{
         PFalconBase,
         PeregrineCoreSelect, //
     },
+    gpu::Bar0,
     gpu::{
         Architecture,
         Chipset, //

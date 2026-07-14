@@ -8,11 +8,11 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     fb::{
         hal::FbHal,
         regs, //
     },
+    gpu::Bar0,
 };
 
 /// Shift applied to the sysmem address before it is written into `NV_PFB_NISO_FLUSH_SYSMEM_ADDR`,

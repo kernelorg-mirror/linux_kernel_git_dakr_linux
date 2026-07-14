@@ -26,8 +26,8 @@ use kernel::{
 
 use crate::{
     bounded_enum,
-    driver::Bar0,
     falcon::hal::LoadMethod,
+    gpu::Bar0,
     gpu::Chipset,
     num::{
         self,

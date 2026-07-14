@@ -4,8 +4,8 @@
 use kernel::sizes::SizeConstants;
 
 use crate::{
-    driver::Bar0,
     fsp::hal::FspHal, //
+    gpu::Bar0,
 };
 
 struct Gb100;

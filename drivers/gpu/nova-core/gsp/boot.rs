@@ -10,12 +10,12 @@ use kernel::{
 };
 
 use crate::{
-    driver::Bar0,
     falcon::{
         gsp::Gsp,
         Falcon, //
     },
     firmware::gsp::GspFirmware,
+    gpu::Bar0,
     gsp::{
         cmdq::Cmdq,
         commands, //
