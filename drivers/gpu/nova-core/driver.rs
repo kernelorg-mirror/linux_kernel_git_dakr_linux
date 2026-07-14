@@ -31,7 +31,7 @@ pub(crate) struct NovaCore<'bound> {
     #[allow(clippy::type_complexity)]
     _reg: auxiliary::Registration<'bound, ForLt!(NovaCoreApi<'_>)>,
     #[pin]
-    pub(crate) gpu: Gpu<'bound>,
+    pub(crate) gpu: Gpu<'bar>,
     bar: pci::Bar<'bound, BAR0_SIZE>,
 }
 
@@ -82,12 +82,7 @@ impl pci::Driver for NovaCoreDriver {
 
             Ok(try_pin_init!(NovaCore {
                 bar: pdev.iomap_region_sized::<BAR0_SIZE>(0, c"nova-core/bar0")?,
-                // TODO: Use `&bar` self-referential pin-init syntax once available.
-                //
-                // SAFETY: `bar` is initialized before this expression is evaluated
-                // (`try_pin_init!()` initializes fields in initializer order), lives at a pinned
-                // stable address, and is dropped after `gpu` (struct field drop order).
-                gpu <- Gpu::new(pdev, unsafe { &*core::ptr::from_ref(bar) }),
+                gpu <- Gpu::new(pdev, bar),
                 _reg: {
                     // TODO: Use `&gpu` self-referential pin-init syntax once available.
                     //
