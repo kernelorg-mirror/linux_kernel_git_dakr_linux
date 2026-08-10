@@ -20,7 +20,10 @@ use kernel::{
 
 use crate::{
     gpu::Gpu,
-    irq::gsp::GspIrq, //
+    irq::{
+        gsp::GspIrq,
+        SubtreeVectors, //
+    },
 };
 
 /// Counter for generating unique auxiliary device IDs.
@@ -39,6 +42,12 @@ pub(crate) struct NovaCore<'bound> {
     bar: pci::Bar<'bound, BAR0_SIZE>,
     #[allow(clippy::type_complexity)]
     _reg: auxiliary::Registration<'bound, ForLt!(())>,
+    /// Self-referential borrow of `vectors`, so this does not have to be repeated in the
+    /// constructor. Will go away with self-referential pin-init.
+    vectors_ref: &'bound SubtreeVectors<'bound>,
+    /// PCI interrupt vector allocation. Dropped last (struct field drop order).
+    #[pin]
+    vectors: SubtreeVectors<'bound>,
 }
 
 pub(crate) struct NovaCoreDriver;
@@ -87,38 +96,34 @@ impl pci::Driver for NovaCoreDriver {
             pdev.enable_device_mem()?;
             pdev.set_master();
 
-            // A PCI device has one interrupt vector allocation, so it is made here for every
-            // subtree nova-core services, and each handler takes the vector for its own subtree.
-            let vectors = crate::irq::alloc_vectors(pdev, crate::irq::gsp::GSP_SUBTREE)?;
-            let gsp_vector = vectors.vector_for(crate::irq::gsp::GSP_SUBTREE)?;
-            let irq_type = vectors.irq_type();
-
             Ok(try_pin_init!(NovaCore {
+                vectors: crate::irq::alloc_vectors(pdev, crate::irq::gsp::GSP_SUBTREE)?,
+                // SAFETY: `vectors` is initialized above, lives at a pinned stable address, and
+                // is dropped after all fields that use `vectors_ref` (struct field drop order).
+                vectors_ref: unsafe { &*core::ptr::from_ref(vectors.as_ref().get_ref()) },
                 bar: pdev.iomap_region_sized::<BAR0_SIZE>(0, c"nova-core/bar0")?,
                 // TODO: Use `&bar` self-referential pin-init syntax once available.
                 //
                 // SAFETY: `bar` is initialized before this expression is evaluated
                 // (`try_pin_init!()` initializes fields in the order they appear here), lives at a
                 // pinned stable address, and is dropped after `gpu` (struct field drop order).
-                gpu <- Gpu::new(pdev, unsafe { &*core::ptr::from_ref(bar) }, vectors),
+                gpu <- Gpu::new(pdev, unsafe { &*core::ptr::from_ref(bar) }, vectors_ref),
                 // Quiesce the interrupt tree before registering the handler below.
                 _: {
                     // SAFETY: as for the `bar` borrow above.
                     let bar = unsafe { &*core::ptr::from_ref(bar) };
-                    crate::irq::gsp::quiesce(bar, gpu.chipset(), irq_type);
+                    crate::irq::gsp::quiesce(bar, gpu.chipset(), vectors_ref.irq_type());
                 },
                 // Register the permanent GSP SWGEN0 handler before enabling the interrupt.
                 //
-                // SAFETY: `bar` is initialized before this expression is evaluated, lives at a
-                // pinned stable address, and is dropped after `_gsp_irq` (declared first, so
-                // dropped first), so the handler's borrow stays valid for its whole lifetime.
-                // `_gsp_irq` is stored in `NovaCore`, whose `Drop` runs `free_irq`, so the
-                // registration is never leaked.
+                // SAFETY: `bar` and `vectors` are initialized and pinned (see above). `_gsp_irq`
+                // is declared before `vectors` in the struct, so it is dropped first, ensuring
+                // `free_irq` runs before the vectors are freed. The registration is stored in
+                // `NovaCore` and never leaked.
                 _gsp_irq <- unsafe {
                     GspIrq::new(
                         pdev,
-                        gsp_vector,
-                        irq_type,
+                        vectors_ref,
                         &*core::ptr::from_ref(bar),
                         gpu.cmdq(),
                         gpu.chipset(),
@@ -129,7 +134,7 @@ impl pci::Driver for NovaCoreDriver {
                 _: {
                     // SAFETY: as for the `bar` borrow above.
                     let bar = unsafe { &*core::ptr::from_ref(bar) };
-                    crate::irq::gsp::enable(bar, gpu.chipset(), irq_type);
+                    crate::irq::gsp::enable(bar, gpu.chipset(), vectors_ref.irq_type());
                     gpu.cmdq().drain()?;
                 },
                 _reg: auxiliary::Registration::new(

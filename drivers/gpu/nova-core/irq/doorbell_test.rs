@@ -195,7 +195,7 @@ pub(crate) fn run_selftest<'a>(
     pdev: &'a pci::Device<Bound>,
     bar: Bar0<'a>,
     chipset: Chipset,
-    vectors: SubtreeVectors<'_>,
+    vectors: &'a SubtreeVectors<'a>,
 ) -> Result {
     // The interrupt type decides how the handler rearms delivery, so the tree takes it from
     // probe's allocation.
@@ -252,7 +252,14 @@ pub(crate) fn run_selftest<'a>(
         // SAFETY: the registration is owned by `guard` below and dropped before this function
         // returns, so its `Drop` (which calls `free_irq()`) always runs and the registration is
         // never leaked or `mem::forget`-ed.
-        unsafe { pdev.request_irq(vector, irq::Flags::TRIGGER_NONE, c"nova-core", handler_init) },
+        unsafe {
+            irq::Registration::new(
+                vector.into(),
+                irq::Flags::TRIGGER_NONE,
+                c"nova-core",
+                handler_init,
+            )
+        },
         GFP_KERNEL,
     )?;
 

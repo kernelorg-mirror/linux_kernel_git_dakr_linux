@@ -209,15 +209,14 @@ pub(crate) struct GspIrq<'a> {
 }
 
 impl<'a> GspIrq<'a> {
-    /// Registers the GSP SWGEN0 threaded handler on `vector`.
+    /// Registers the GSP SWGEN0 threaded handler for the GSP subtree in `vectors`.
     ///
     /// # Safety
     ///
     /// The caller must not leak the returned value: its [`Drop`] runs `free_irq`.
     pub(crate) unsafe fn new(
         pdev: &'a pci::Device<device::Bound>,
-        vector: pci::IrqVector<'a>,
-        irq_type: pci::IrqType,
+        vectors: &'a super::SubtreeVectors<'a>,
         bar: Bar0<'a>,
         cmdq: Arc<Cmdq>,
         chipset: Chipset,
@@ -227,15 +226,15 @@ impl<'a> GspIrq<'a> {
             // SAFETY: the caller guarantees the returned `GspIrq` is not leaked, so this
             // registration's `Drop` (`free_irq`) always runs.
             reg <- unsafe {
-                pdev.request_threaded_irq(
-                    vector,
+                irq::ThreadedRegistration::new(
+                    vectors.vector_for(GSP_SUBTREE)?.into(),
                     irq::Flags::TRIGGER_NONE,
                     c"nova-core",
-                    GspInterrupt::new(bar, cmdq, chipset, irq_type, dev),
+                    GspInterrupt::new(bar, cmdq, chipset, vectors.irq_type(), dev),
                 )
             },
             bar,
-            tree: Tree::new(chipset, irq_type, GSP_SUBTREE),
+            tree: Tree::new(chipset, vectors.irq_type(), GSP_SUBTREE),
         })
     }
 }

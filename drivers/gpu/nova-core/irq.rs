@@ -28,9 +28,8 @@ use kernel::{
 ///
 /// MSI-X raises a separate table entry per subtree, so subtree `N` arrives on entry `N`. MSI has a
 /// single message that every subtree raises, so all of them arrive on the one allocated entry.
-#[derive(Clone, Copy)]
 pub(crate) struct SubtreeVectors<'a> {
-    vectors: pci::IrqAllocation<'a>,
+    vectors: pci::IrqVectorRegistration<'a>,
     /// `TOP` bit of every subtree nova-core services.
     serviced: u32,
 }
@@ -47,12 +46,13 @@ impl<'a> SubtreeVectors<'a> {
     /// # Errors
     ///
     /// `EINVAL` if `subtree` names anything other than a single subtree nova-core services.
-    pub(crate) fn vector_for(&self, subtree: u32) -> Result<pci::IrqVector<'a>> {
+    pub(crate) fn vector_for(&self, subtree: u32) -> Result<pci::IrqVector<'_>> {
         if subtree.count_ones() != 1 || subtree & self.serviced == 0 {
             return Err(EINVAL);
         }
 
-        self.vectors.vector(entry_index(self.irq_type(), subtree))
+        self.vectors
+            .index(entry_index(self.irq_type(), subtree) as usize)
     }
 }
 
