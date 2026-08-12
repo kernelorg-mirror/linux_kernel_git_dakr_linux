@@ -35,6 +35,7 @@ pub(crate) struct NovaCore<'bound> {
     _reg: auxiliary::Registration<'gpu, ForLt!(NovaCoreApi<'_>)>,
     #[pin]
     pub(crate) gpu: Gpu<'bound>,
+    _enable: pci::DeviceEnableGuard<'bound>,
 }
 
 pub(crate) struct NovaCoreDriver;
@@ -75,7 +76,7 @@ impl pci::Driver for NovaCoreDriver {
         pin_init::pin_init_scope(move || {
             dev_dbg!(pdev, "Probe Nova Core GPU driver.\n");
 
-            pdev.enable_device_mem()?;
+            let enable = pdev.enable_device()?;
             pdev.set_master();
 
             Ok(try_pin_init!(NovaCore {
@@ -94,6 +95,7 @@ impl pci::Driver for NovaCoreDriver {
                         NovaCoreApi { gpu: gpu.get_ref(), pdev },
                     )?
                 },
+                _enable: enable,
             }))
         })
     }
