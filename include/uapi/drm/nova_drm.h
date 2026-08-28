@@ -136,6 +136,12 @@ struct drm_nova_gpu_info {
 	 * @implementation: GPU implementation identifier.
 	 */
 	__u32 implementation;
+
+	/**
+	 * @vram_size: Amount of usable FB, excluding GSP carveouts and protected
+	 * regions.
+	 */
+	__u64 vram_size;
 };
 
 #define DRM_NOVA_GETPARAM		0x00

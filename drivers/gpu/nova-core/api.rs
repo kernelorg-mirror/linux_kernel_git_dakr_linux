@@ -37,4 +37,9 @@ impl NovaCoreApi<'_> {
     pub fn implementation(&self) -> u32 {
         self.gpu.spec.chipset.implementation()
     }
+
+    /// Returns the total usable VRAM size of this GPU in bytes.
+    pub fn vram_size(&self) -> u64 {
+        self.gpu.gsp_static_info.vram_size()
+    }
 }
