@@ -624,6 +624,20 @@ impl UserSliceWriter {
         self.length -= len;
         Ok(())
     }
+
+    /// Writes as much of the provided value as fits in the remaining buffer.
+    ///
+    /// Copies `min(size_of::<T>(), self.len())` bytes to userspace. Returns the number of bytes
+    /// actually written. This is useful for versioned structs where an older userspace may provide
+    /// a smaller buffer than the current kernel struct.
+    ///
+    /// Fails with [`EFAULT`] if the write happens on a bad address. This call may modify the
+    /// associated userspace slice even if it returns an error.
+    pub fn write_truncated<T: AsBytes>(&mut self, value: &T) -> Result<usize> {
+        let len = self.length.min(size_of::<T>());
+        self.write_slice(&value.as_bytes()[..len])?;
+        Ok(len)
+    }
 }
 
 /// Reads a nul-terminated string into `dst` and returns the length.
