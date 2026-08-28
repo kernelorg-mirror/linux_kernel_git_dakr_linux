@@ -38,6 +38,7 @@ impl GpuInfo {
             vram_size: reg_data.api.vram_size(),
             gpu_name: reg_data.api.gpu_name(),
             gpu_short_name: reg_data.api.gpu_short_name(),
+            gpu_gid: reg_data.api.gpu_gid(),
         })
     }
 }

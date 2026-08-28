@@ -136,6 +136,13 @@ impl GspStaticConfigInfo {
         self.0.gpuShortNameString
     }
 
+    /// Returns the 16-byte SHA-1 GPU identifier.
+    pub(crate) fn gpu_gid(&self) -> [u8; 16] {
+        let mut gid = [0; 16];
+        gid.copy_from_slice(&self.0.gidInfo.data[..16]);
+        gid
+    }
+
     /// Returns an iterator over valid FB regions from GSP firmware data.
     fn fb_regions(
         &self,

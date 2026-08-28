@@ -34,6 +34,11 @@ impl NovaCoreApi<'_> {
         *self.gpu.gsp_static_info.gpu_short_name_bytes()
     }
 
+    /// Returns the 16-byte SHA-1 GPU identifier supplied by GSP-RM.
+    pub fn gpu_gid(&self) -> [u8; 16] {
+        *self.gpu.gsp_static_info.gpu_gid()
+    }
+
     /// Obtain a [`NovaCoreApi`] handle from an auxiliary device registered
     /// by nova-core.
     pub fn of(adev: &auxiliary::Device<Bound>) -> Result<Pin<&NovaCoreApi<'_>>> {

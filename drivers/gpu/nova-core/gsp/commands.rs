@@ -215,6 +215,7 @@ impl CommandToGsp for GetGspStaticInfo {
 pub(crate) struct GetGspStaticInfoReply {
     gpu_name: [u8; 64],
     gpu_short_name: [u8; 64],
+    gpu_gid: [u8; 16],
     /// Usable FB (VRAM) regions for driver memory allocation.
     pub(crate) usable_fb_regions: KVec<Range<u64>>,
 }
@@ -236,6 +237,7 @@ impl MessageFromGsp for GetGspStaticInfoReply {
         Ok(GetGspStaticInfoReply {
             gpu_name: msg.gpu_name_str(),
             gpu_short_name: msg.gpu_short_name_str(),
+            gpu_gid: msg.gpu_gid(),
             usable_fb_regions,
         })
     }
@@ -261,6 +263,11 @@ impl GetGspStaticInfoReply {
     /// Returns the short GPU name as a NUL-terminated byte string.
     pub(crate) fn gpu_short_name_bytes(&self) -> &[u8; 64] {
         &self.gpu_short_name
+    }
+
+    /// Returns the 16-byte SHA-1 GPU identifier.
+    pub(crate) fn gpu_gid(&self) -> &[u8; 16] {
+        &self.gpu_gid
     }
 
     /// Returns the name of the GPU as a string.
