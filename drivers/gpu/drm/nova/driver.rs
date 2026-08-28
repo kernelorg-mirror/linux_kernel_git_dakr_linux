@@ -32,7 +32,6 @@ pub(crate) struct Nova<'bound> {
 
 /// DRM registration data, accessible from ioctl handlers via the registration guard.
 pub(crate) struct DrmRegData<'bound> {
-    #[expect(unused)]
     pub(crate) api: Pin<&'bound NovaCoreApi<'bound>>,
 }
 
@@ -97,5 +96,6 @@ impl drm::Driver for NovaDriver {
         (NOVA_GETPARAM, drm_nova_getparam, ioctl::RENDER_ALLOW, File::get_param),
         (NOVA_GEM_CREATE, drm_nova_gem_create, ioctl::AUTH | ioctl::RENDER_ALLOW, File::gem_create),
         (NOVA_GEM_INFO, drm_nova_gem_info, ioctl::AUTH | ioctl::RENDER_ALLOW, File::gem_info),
+        (NOVA_INFO, drm_nova_info, ioctl::RENDER_ALLOW, File::info),
     }
 }

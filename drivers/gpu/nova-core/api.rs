@@ -12,11 +12,12 @@ use kernel::{
     types::CovariantForLt, //
 };
 
-use crate::gpu::Gpu;
+use crate::gpu::{
+    Gpu, //
+};
 
 /// API handle for the auxiliary bus child drivers to interact with nova-core.
 pub struct NovaCoreApi<'bound> {
-    #[expect(unused)]
     pub(crate) gpu: Pin<&'bound Gpu<'bound>>,
 }
 
@@ -25,5 +26,15 @@ impl NovaCoreApi<'_> {
     /// by nova-core.
     pub fn of(adev: &auxiliary::Device<Bound>) -> Result<Pin<&NovaCoreApi<'_>>> {
         adev.registration_data::<CovariantForLt!(NovaCoreApi<'_>)>()
+    }
+
+    /// Returns the architecture identifier of this GPU.
+    pub fn architecture(&self) -> u32 {
+        self.gpu.spec.chipset.arch() as u32
+    }
+
+    /// Returns the implementation identifier of this GPU.
+    pub fn implementation(&self) -> u32 {
+        self.gpu.spec.chipset.implementation()
     }
 }
