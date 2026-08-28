@@ -131,6 +131,11 @@ impl GspStaticConfigInfo {
         self.0.gpuNameString
     }
 
+    /// Returns a bytes array containing the NUL-terminated short name of this GPU.
+    pub(crate) fn gpu_short_name_str(&self) -> [u8; 64] {
+        self.0.gpuShortNameString
+    }
+
     /// Returns an iterator over valid FB regions from GSP firmware data.
     fn fb_regions(
         &self,

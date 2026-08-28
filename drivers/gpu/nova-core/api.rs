@@ -29,6 +29,11 @@ impl NovaCoreApi<'_> {
         *self.gpu.gsp_static_info.gpu_name_bytes()
     }
 
+    /// Returns the NUL-terminated short GPU name supplied by GSP-RM.
+    pub fn gpu_short_name(&self) -> [u8; 64] {
+        *self.gpu.gsp_static_info.gpu_short_name_bytes()
+    }
+
     /// Obtain a [`NovaCoreApi`] handle from an auxiliary device registered
     /// by nova-core.
     pub fn of(adev: &auxiliary::Device<Bound>) -> Result<Pin<&NovaCoreApi<'_>>> {
