@@ -251,6 +251,11 @@ pub(crate) enum GpuNameError {
 }
 
 impl GetGspStaticInfoReply {
+    /// Returns the full GPU name as a NUL-terminated byte string.
+    pub(crate) fn gpu_name_bytes(&self) -> &[u8; 64] {
+        &self.gpu_name
+    }
+
     /// Returns the name of the GPU as a string.
     ///
     /// Returns an error if the string given by the GSP does not contain a null terminator or

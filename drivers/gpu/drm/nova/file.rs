@@ -36,6 +36,7 @@ impl GpuInfo {
             architecture: reg_data.api.architecture(),
             implementation: reg_data.api.implementation(),
             vram_size: reg_data.api.vram_size(),
+            gpu_name: reg_data.api.gpu_name(),
         })
     }
 }
