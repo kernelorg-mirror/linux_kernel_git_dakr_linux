@@ -32,13 +32,15 @@ struct GpuInfo(uapi::drm_nova_gpu_info);
 
 impl GpuInfo {
     fn new(reg_data: &DrmRegData<'_>) -> Self {
-        Self(uapi::drm_nova_gpu_info {
-            architecture: reg_data.api.architecture(),
-            implementation: reg_data.api.implementation(),
-            vram_size: reg_data.api.vram_size(),
-            gpu_name: reg_data.api.gpu_name(),
-            gpu_short_name: reg_data.api.gpu_short_name(),
-            gpu_gid: reg_data.api.gpu_gid(),
+        reg_data.api.with(|api| {
+            Self(uapi::drm_nova_gpu_info {
+                architecture: api.architecture(),
+                implementation: api.implementation(),
+                vram_size: api.vram_size(),
+                gpu_name: api.gpu_name(),
+                gpu_short_name: api.gpu_short_name(),
+                gpu_gid: api.gpu_gid(),
+            })
         })
     }
 }
@@ -74,7 +76,7 @@ impl File {
         _file: &drm::File<File>,
     ) -> Result<u32> {
         let value = match getparam.param as u32 {
-            uapi::NOVA_GETPARAM_VRAM_BAR_SIZE => reg_data.api.bar1_size()?,
+            uapi::NOVA_GETPARAM_VRAM_BAR_SIZE => reg_data.api.with(|api| api.bar1_size())?,
             _ => return Err(EINVAL),
         };
 

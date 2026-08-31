@@ -10,7 +10,7 @@ use kernel::{
     device::Bound,
     pci,
     prelude::*,
-    types::CovariantForLt, //
+    types::ForLt, //
 };
 
 use crate::gpu::{
@@ -39,10 +39,9 @@ impl NovaCoreApi<'_> {
         *self.gpu.gsp_static_info.gpu_gid()
     }
 
-    /// Obtain a [`NovaCoreApi`] handle from an auxiliary device registered
-    /// by nova-core.
-    pub fn of(adev: &auxiliary::Device<Bound>) -> Result<Pin<&NovaCoreApi<'_>>> {
-        adev.registration_data::<CovariantForLt!(NovaCoreApi<'_>)>()
+    /// Obtain a [`NovaCoreApiHandle`] from an auxiliary device registered by nova-core.
+    pub fn handle(adev: &auxiliary::Device<Bound>) -> Result<NovaCoreApiHandle<'_>> {
+        NovaCoreApiHandle::of(adev)
     }
 
     /// Returns the architecture identifier of this GPU.
@@ -64,5 +63,24 @@ impl NovaCoreApi<'_> {
     /// Returns the total usable VRAM size of this GPU in bytes.
     pub fn vram_size(&self) -> u64 {
         self.gpu.gsp_static_info.vram_size()
+    }
+}
+
+/// Closure-based API handle for invariant registration data types.
+pub struct NovaCoreApiHandle<'a> {
+    adev: &'a auxiliary::Device<Bound>,
+}
+
+impl<'a> NovaCoreApiHandle<'a> {
+    fn of(adev: &'a auxiliary::Device<Bound>) -> Result<Self> {
+        adev.registration_data_with::<ForLt!(NovaCoreApi<'_>), ()>(|_| ())?;
+        Ok(Self { adev })
+    }
+
+    /// Access the [`NovaCoreApi`] through a closure.
+    pub fn with<R>(&self, f: impl for<'b> FnOnce(Pin<&'b NovaCoreApi<'b>>) -> R) -> R {
+        self.adev
+            .registration_data_with::<ForLt!(NovaCoreApi<'_>), R>(f)
+            .expect("TypeId was validated in NovaCoreApiHandle::of()")
     }
 }

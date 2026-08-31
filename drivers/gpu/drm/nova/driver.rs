@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 
-use core::pin::Pin;
-
 use kernel::{
     auxiliary,
     device::{
@@ -20,7 +18,10 @@ use kernel::{
 use crate::file::File;
 use crate::gem::NovaObject;
 
-use nova_core::api::NovaCoreApi;
+use nova_core::api::{
+    NovaCoreApi,
+    NovaCoreApiHandle, //
+};
 
 pub(crate) struct NovaDriver;
 
@@ -32,7 +33,7 @@ pub(crate) struct Nova<'bound> {
 
 /// DRM registration data, accessible from ioctl handlers via the registration guard.
 pub(crate) struct DrmRegData<'bound> {
-    pub(crate) api: Pin<&'bound NovaCoreApi<'bound>>,
+    pub(crate) api: NovaCoreApiHandle<'bound>,
 }
 
 /// Convienence type alias for the DRM device type for this driver
@@ -69,7 +70,7 @@ impl auxiliary::Driver for NovaDriver {
     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         let drm = drm::UnregisteredDevice::<Self>::new(adev, Ok(()))?;
         let reg_data = DrmRegData {
-            api: NovaCoreApi::of(adev)?,
+            api: NovaCoreApi::handle(adev)?,
         };
         // SAFETY: `reg` is stored in `Nova` and dropped when the driver is unbound; it is
         // never forgotten.

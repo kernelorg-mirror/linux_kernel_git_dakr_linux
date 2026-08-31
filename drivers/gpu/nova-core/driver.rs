@@ -15,7 +15,7 @@ use kernel::{
         Atomic,
         Relaxed, //
     },
-    types::CovariantForLt,
+    types::ForLt,
 };
 
 use crate::{
@@ -29,7 +29,7 @@ static AUXILIARY_ID_COUNTER: Atomic<u32> = Atomic::new(0);
 #[pin_data]
 pub(crate) struct NovaCore<'bound> {
     #[allow(clippy::type_complexity)]
-    _reg: auxiliary::Registration<'bound, CovariantForLt!(NovaCoreApi<'_>)>,
+    _reg: auxiliary::Registration<'bound, ForLt!(NovaCoreApi<'_>)>,
     #[pin]
     pub(crate) gpu: Gpu<'bound>,
     bar: pci::Bar<'bound, BAR0_SIZE>,
