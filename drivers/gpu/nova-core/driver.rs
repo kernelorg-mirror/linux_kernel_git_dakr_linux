@@ -29,8 +29,10 @@ static AUXILIARY_ID_COUNTER: Atomic<u32> = Atomic::new(0);
 #[pin_data]
 pub(crate) struct NovaCore<'bound> {
     #[allow(clippy::type_complexity)]
-    _reg: auxiliary::Registration<'bound, ForLt!(NovaCoreApi<'_>)>,
+    #[not_covariant]
+    _reg: auxiliary::Registration<'gpu, ForLt!(NovaCoreApi<'_>)>,
     #[pin]
+    #[not_covariant]
     pub(crate) gpu: Gpu<'bar>,
     bar: pci::Bar<'bound, BAR0_SIZE>,
 }
@@ -83,31 +85,19 @@ impl pci::Driver for NovaCoreDriver {
             Ok(try_pin_init!(NovaCore {
                 bar: pdev.iomap_region_sized::<BAR0_SIZE>(0, c"nova-core/bar0")?,
                 gpu <- Gpu::new(pdev, bar),
-                _reg: {
-                    // TODO: Use `&gpu` self-referential pin-init syntax once available.
-                    //
-                    // SAFETY: `gpu` is initialized before this expression is evaluated
-                    // (`try_pin_init!()` initializes fields in initializer order), lives at
-                    // a pinned stable address, and is dropped after `_reg` (struct field
-                    // drop order).
-                    let gpu = unsafe {
-                        Pin::new_unchecked(&*core::ptr::from_ref(gpu.as_ref().get_ref()))
-                    };
-
-                    // SAFETY: `NovaCore` is dropped when the device is unbound;
-                    // i.e. `mem::forget()` is never called on it.
-                    unsafe {
-                        auxiliary::Registration::new_with_lt(
-                            pdev.as_ref(),
-                            c"nova-drm",
-                            // TODO[XARR]: Use XArray or perhaps IDA for proper ID
-                            // allocation/recycling. For now, use a simple atomic counter that
-                            // never recycles IDs.
-                            AUXILIARY_ID_COUNTER.fetch_add(1, Relaxed),
-                            crate::MODULE_NAME,
-                            NovaCoreApi { gpu, pdev },
-                        )?
-                    }
+                // SAFETY: `NovaCore` is dropped when the device is unbound;
+                // i.e. `mem::forget()` is never called on it.
+                _reg: unsafe {
+                    auxiliary::Registration::new_with_lt(
+                        pdev.as_ref(),
+                        c"nova-drm",
+                        // TODO[XARR]: Use XArray or perhaps IDA for proper ID
+                        // allocation/recycling. For now, use a simple atomic counter that
+                        // never recycles IDs.
+                        AUXILIARY_ID_COUNTER.fetch_add(1, Relaxed),
+                        crate::MODULE_NAME,
+                        NovaCoreApi { gpu, pdev },
+                    )?
                 },
             }))
         })
