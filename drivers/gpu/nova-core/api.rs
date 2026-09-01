@@ -13,6 +13,8 @@ use kernel::{
     types::ForLt, //
 };
 
+pub use crate::gpu::Spec;
+
 use crate::gpu::{
     Gpu, //
 };
@@ -44,14 +46,9 @@ impl NovaCoreApi<'_> {
         NovaCoreApiHandle::of(adev)
     }
 
-    /// Returns the architecture identifier of this GPU.
-    pub fn architecture(&self) -> u32 {
-        self.gpu.spec.chipset.arch() as u32
-    }
-
-    /// Returns the implementation identifier of this GPU.
-    pub fn implementation(&self) -> u32 {
-        self.gpu.spec.chipset.implementation()
+    /// Returns the GPU [`Spec`].
+    pub fn spec(&self) -> &Spec {
+        &self.gpu.spec
     }
 
     /// Returns the size of the PCIe BAR used for accessing VRAM, typically
@@ -78,7 +75,9 @@ impl<'a> NovaCoreApiHandle<'a> {
     }
 
     /// Access the [`NovaCoreApi`] through a closure.
-    pub fn with<R>(&self, f: impl for<'b> FnOnce(Pin<&'b NovaCoreApi<'b>>) -> R) -> R {
+    ///
+    /// References to covariant sub-fields can be returned from the closure directly.
+    pub fn with<R>(&self, f: impl for<'b> FnOnce(Pin<&'a NovaCoreApi<'b>>) -> R) -> R {
         self.adev
             .registration_data_with::<ForLt!(NovaCoreApi<'_>), R>(f)
             .expect("TypeId was validated in NovaCoreApiHandle::of()")

@@ -42,7 +42,8 @@ macro_rules! define_chipset {
         ::kernel::macros::paste!(
         /// Enum representation of the GPU chipset.
         #[derive(fmt::Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
-        pub(crate) enum Chipset {
+        #[allow(missing_docs)]
+        pub enum Chipset {
             $($variant = $value),*,
         }
 
@@ -119,7 +120,8 @@ define_chipset!({
 });
 
 impl Chipset {
-    pub(crate) const fn arch(self) -> Architecture {
+    /// Returns the [`Architecture`] generation of this chipset.
+    pub const fn arch(self) -> Architecture {
         match self {
             Self::TU102 | Self::TU104 | Self::TU106 | Self::TU117 | Self::TU116 => {
                 Architecture::Turing
@@ -138,8 +140,8 @@ impl Chipset {
         }
     }
 
-    /// Returns the implementation identifier of this chipset.
-    pub(crate) const fn implementation(self) -> u32 {
+    /// Returns the implementation identifier of this chipset within its architecture.
+    pub const fn implementation(self) -> u32 {
         self as u32 & 0xf
     }
 
@@ -167,7 +169,8 @@ bounded_enum! {
     /// Enum representation of the GPU generation.
     #[derive(fmt::Debug, Copy, Clone)]
     #[repr(u32)]
-    pub(crate) enum Architecture with TryFrom<Bounded<u32, 6>> {
+    #[allow(missing_docs)]
+    pub enum Architecture with TryFrom<Bounded<u32, 6>> {
         Turing = uapi::drm_nova_architecture_NOVA_DRM_ARCHITECTURE_TURING,
         Ampere = uapi::drm_nova_architecture_NOVA_DRM_ARCHITECTURE_AMPERE,
         Hopper = uapi::drm_nova_architecture_NOVA_DRM_ARCHITECTURE_HOPPER,
@@ -202,8 +205,9 @@ impl fmt::Display for Revision {
 
 /// Structure holding a basic description of the GPU: `Chipset` and `Revision`.
 #[derive(Clone, Copy)]
-pub(crate) struct Spec {
-    pub(crate) chipset: Chipset,
+pub struct Spec {
+    /// The GPU chipset.
+    pub chipset: Chipset,
     revision: Revision,
 }
 

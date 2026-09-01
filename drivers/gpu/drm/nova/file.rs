@@ -13,6 +13,7 @@ use kernel::{
         gem::BaseObject,
         Registered, //
     },
+    num::Bounded,
     prelude::*,
     transmute::AsBytes,
     uaccess::UserSlice,
@@ -32,10 +33,12 @@ struct GpuInfo(uapi::drm_nova_gpu_info);
 
 impl GpuInfo {
     fn new(reg_data: &DrmRegData<'_>) -> Self {
+        let spec = reg_data.api.with(|api| api.get_ref().spec());
+
         reg_data.api.with(|api| {
             Self(uapi::drm_nova_gpu_info {
-                architecture: api.architecture(),
-                implementation: api.implementation(),
+                architecture: u32::from(Bounded::from(spec.chipset.arch())),
+                implementation: spec.chipset.implementation(),
                 vram_size: api.vram_size(),
                 gpu_name: api.gpu_name(),
                 gpu_short_name: api.gpu_short_name(),
