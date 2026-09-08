@@ -354,15 +354,12 @@ macro_rules! define_irq_accessor_by_index {
             pin_init::pin_init_scope(move || {
                 let request = self.$request_fn(index)?;
 
-                // SAFETY: Caller guarantees the Registration will not be leaked.
-                Ok(unsafe {
-                    irq::$reg_type::<T>::new(
+                Ok(irq::$reg_type::<T>::new(
                         request,
                         flags,
                         name,
                         handler,
-                    )
-                })
+                ))
             })
         }
     };
@@ -376,12 +373,7 @@ macro_rules! define_irq_accessor_by_name {
         $handler_trait:ident
     ) => {
         $(#[$meta])*
-        ///
-        /// # Safety
-        ///
-        /// Callers must not `mem::forget()` the resulting registration or otherwise prevent its
-        /// [`Drop`] implementation from running.
-        pub unsafe fn $fn_name<'a, T: irq::$handler_trait + 'a>(
+        pub fn $fn_name<'a, T: irq::$handler_trait + 'a>(
             &'a self,
             flags: irq::Flags,
             irq_name: &'a CStr,
@@ -391,15 +383,12 @@ macro_rules! define_irq_accessor_by_name {
             pin_init::pin_init_scope(move || {
                 let request = self.$request_fn(irq_name)?;
 
-                // SAFETY: Caller guarantees the Registration will not be leaked.
-                Ok(unsafe {
-                    irq::$reg_type::<T>::new(
+                Ok(irq::$reg_type::<T>::new(
                         request,
                         flags,
                         name,
                         handler,
-                    )
-                })
+                ))
             })
         }
     };

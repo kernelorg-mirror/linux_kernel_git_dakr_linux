@@ -85,7 +85,9 @@ impl<const SIZE: usize> Region<SIZE> {
 
 impl<const SIZE: usize> KnownSize for Region<SIZE> {
     const MIN_SIZE: usize = SIZE;
-    // Alignment of 4 is the most common; different base types can be added once required.
+    #[cfg(CONFIG_64BIT)]
+    const MIN_ALIGN: Alignment = Alignment::new::<8>();
+    #[cfg(not(CONFIG_64BIT))]
     const MIN_ALIGN: Alignment = Alignment::new::<4>();
 
     #[inline(always)]

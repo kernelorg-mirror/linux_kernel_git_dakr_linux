@@ -168,12 +168,7 @@ pub struct Registration<'a, T: Handler> {
 
 impl<'a, T: Handler> Registration<'a, T> {
     /// Registers the IRQ handler with the system for the given IRQ number.
-    ///
-    /// # Safety
-    ///
-    /// Callers must not `mem::forget()` the returned [`Registration`] or otherwise prevent its
-    /// [`Drop`] implementation from running.
-    pub unsafe fn new(
+    pub fn new(
         request: IrqRequest<'a>,
         flags: Flags,
         name: &'static CStr,
@@ -385,12 +380,7 @@ pub struct ThreadedRegistration<'a, T: ThreadedHandler> {
 
 impl<'a, T: ThreadedHandler> ThreadedRegistration<'a, T> {
     /// Registers the IRQ handler with the system for the given IRQ number.
-    ///
-    /// # Safety
-    ///
-    /// Callers must not `mem::forget()` the returned [`ThreadedRegistration`] or otherwise prevent
-    /// its [`Drop`] implementation from running.
-    pub unsafe fn new(
+    pub fn new(
         request: IrqRequest<'a>,
         flags: Flags,
         name: &'static CStr,
