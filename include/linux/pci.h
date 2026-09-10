@@ -594,6 +594,14 @@ struct pci_dev {
 	struct vfio_pci_core_device *vfio_pci_core;
 #endif
 
+#if IS_ENABLED(CONFIG_RUST)
+	/*
+	 * Private data owned by the PF's Rust driver, readable by VF drivers
+	 * through the PCI VF registration data Rust abstraction.
+	 */
+	void		*vf_registration_data_rust;
+#endif
+
 	/* These methods index pci_reset_fn_methods[] */
 	u8 reset_methods[PCI_NUM_RESET_METHODS]; /* In priority order */
 

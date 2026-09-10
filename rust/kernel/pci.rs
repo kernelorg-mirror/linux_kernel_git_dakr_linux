@@ -20,13 +20,21 @@ use crate::{
     io::resource,
     prelude::*,
     str::CStr,
-    types::Opaque,
+    types::{
+        ForLt,
+        Opaque, //
+    },
     ThisModule, //
 };
 use core::{
-    marker::PhantomData,
+    any::TypeId,
+    marker::{
+        PhantomData,
+        PhantomPinned, //
+    },
     mem::offset_of,
     num::NonZero,
+    pin::Pin,
     ptr::{
         addr_of_mut,
         NonNull, //
@@ -85,6 +93,7 @@ unsafe impl<T: Driver> driver::RegistrationOps for Adapter<T> {
             (*pdrv.get()).probe = Some(Self::probe_callback);
             (*pdrv.get()).remove = Some(Self::remove_callback);
             (*pdrv.get()).id_table = T::ID_TABLE.as_ptr();
+            (*pdrv.get()).driver_managed_dma = T::DRIVER_MANAGED_DMA;
         }
 
         // SAFETY: `pdrv` is guaranteed to be a valid `DriverType`.
@@ -188,6 +197,17 @@ impl DeviceId {
             driver_data: 0,
             override_only: 0,
         })
+    }
+
+    /// Match a class and vendor, requiring a VFIO driver override.
+    pub const fn from_class_and_vendor_vfio_override(
+        class: Class,
+        class_mask: ClassMask,
+        vendor: Vendor,
+    ) -> Self {
+        let mut id = Self::from_class_and_vendor(class, class_mask, vendor);
+        id.0.override_only = bindings::PCI_ID_F_VFIO_DRIVER_OVERRIDE;
+        id
     }
 
     /// Equivalent to C's `PCI_DEVICE_CLASS` macro.
@@ -302,6 +322,9 @@ pub trait Driver {
 
     /// The table of device ids supported by the driver.
     const ID_TABLE: IdTable<Self::IdInfo>;
+
+    /// Whether the driver manages its own DMA domain, as VFIO drivers do.
+    const DRIVER_MANAGED_DMA: bool = false;
 
     /// PCI driver probe.
     ///
@@ -522,6 +545,261 @@ impl<'a> Device<device::Core<'a>> {
     pub fn set_master(&self) {
         // SAFETY: `self.as_raw` is guaranteed to be a pointer to a valid `struct pci_dev`.
         unsafe { bindings::pci_set_master(self.as_raw()) };
+    }
+}
+
+impl Device<device::Bound> {
+    /// Returns `true` if this device is a PCI SR-IOV virtual function (VF).
+    #[inline]
+    pub fn is_virtfn(&self) -> bool {
+        // SAFETY: `self.as_raw()` is a valid pointer to a `struct pci_dev`.
+        unsafe { bindings::pci_dev_is_virtfn(self.as_raw()) }
+    }
+
+    /// Returns `true` if this device is a PCI SR-IOV physical function (PF).
+    #[inline]
+    pub fn is_physfn(&self) -> bool {
+        // SAFETY: `self.as_raw()` is a valid pointer to a `struct pci_dev`.
+        unsafe { bindings::pci_dev_is_physfn(self.as_raw()) }
+    }
+
+    /// Returns the PF for this VF, or [`ENODEV`] if this is not a VF.
+    ///
+    /// The returned reference borrows `self`, so the VF (and hence its PF) remains
+    /// valid for the lifetime of the reference. The PF is guaranteed bound while
+    /// VFs exist because [`VfRegistration`] calls `pci_disable_sriov()` in its
+    /// drop, which blocks until all VF drivers have completed their `remove()`.
+    pub fn physfn(&self) -> Result<&Device<device::Bound>> {
+        if !self.is_virtfn() {
+            return Err(ENODEV);
+        }
+        // SAFETY: `self.as_raw()` is valid and `pci_physfn` returns the PF
+        // pointer when the device is a VF. The PF remains bound because
+        // `VfRegistration` owns the SR-IOV lifecycle.
+        let pf = unsafe { bindings::pci_physfn(self.as_raw()) };
+        if pf.is_null() {
+            return Err(ENODEV);
+        }
+        // SAFETY: `pf` is a valid PCI device pointer whose driver is bound.
+        Ok(unsafe { &*pf.cast::<Device<device::Bound>>() })
+    }
+
+    /// Returns the VF index (0-based) within the PF, or an error if not a VF.
+    pub fn vf_id(&self) -> Result<u32> {
+        if !self.is_virtfn() {
+            return Err(ENODEV);
+        }
+        // SAFETY: `self.as_raw()` is a valid VF device.
+        let id = unsafe { bindings::pci_iov_vf_id(self.as_raw()) };
+        if id < 0 {
+            return Err(Error::from_errno(id));
+        }
+        Ok(id as u32)
+    }
+
+    /// Returns the raw `vf_registration_data_rust` pointer from this device.
+    fn vf_registration_data_rust(&self) -> *mut core::ffi::c_void {
+        // SAFETY: `self.as_raw()` is valid.
+        unsafe { (*self.as_raw()).vf_registration_data_rust }
+    }
+
+    /// Sets the `vf_registration_data_rust` pointer on this device.
+    fn set_vf_registration_data_rust(&self, ptr: *mut core::ffi::c_void) {
+        // SAFETY: `self.as_raw()` is valid. This is only called from
+        // `VfRegistration` init/drop which serializes access.
+        unsafe { (*self.as_raw()).vf_registration_data_rust = ptr };
+    }
+
+    /// Access the VF registration data through a closure with an HRTB lifetime.
+    ///
+    /// `F` is the [`ForLt`](trait@ForLt) encoding of the data type. Returns
+    /// [`ENODEV`] if this is not a VF, [`ENOENT`] if no data was registered,
+    /// or [`EINVAL`] if `F` does not match the type registered by the PF.
+    ///
+    /// The pointer is guaranteed valid while this VF is probed, because
+    /// [`VfRegistration`] calls `pci_disable_sriov()` in its drop (which
+    /// blocks until all VF `remove()` callbacks complete) before clearing the
+    /// pointer and dropping the data.
+    pub fn vf_registration_data_with<F: ForLt + 'static, R>(
+        &self,
+        f: impl for<'a> FnOnce(Pin<&F::Of<'a>>) -> R,
+    ) -> Result<R> {
+        // SAFETY: The HRTB on the closure prevents the caller from smuggling
+        // in a concrete short lifetime. See `registration_data_pinned`.
+        let pinned = unsafe { self.vf_registration_data_pinned::<F>()? };
+        Ok(f(pinned))
+    }
+
+    /// Returns a pinned reference to the VF registration data.
+    ///
+    /// Available only when `F` implements [`CovariantForLt`](trait@crate::types::CovariantForLt),
+    /// guaranteeing that the lifetime shortening from `'static` is sound.
+    ///
+    /// For non-covariant types, use [`Self::vf_registration_data_with()`].
+    pub fn vf_registration_data<F: crate::types::CovariantForLt + 'static>(
+        &self,
+    ) -> Result<Pin<&F::Of<'_>>> {
+        // SAFETY: `CovariantForLt` guarantees that the lifetime shortening is
+        // sound.
+        unsafe { self.vf_registration_data_pinned::<F>() }
+    }
+
+    /// Internal helper: reads the `vf_registration_data_rust` pointer from the
+    /// PF, checks the `TypeId`, and returns a pinned reference.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the returned reference is only used behind an
+    /// HRTB closure or with a covariant type.
+    unsafe fn vf_registration_data_pinned<F: ForLt + 'static>(&self) -> Result<Pin<&F::Of<'_>>> {
+        let pf = self.physfn()?;
+
+        let ptr = pf.vf_registration_data_rust();
+        if ptr.is_null() {
+            return Err(ENOENT);
+        }
+
+        // SAFETY: `ptr` points to a `VfRegistrationData` whose first field is
+        // a `TypeId`.
+        let type_id = unsafe { ptr.cast::<TypeId>().read() };
+        if type_id != TypeId::of::<F>() {
+            return Err(EINVAL);
+        }
+
+        // SAFETY: TypeId check confirms the stored type matches `F`. The data
+        // is pinned inside the PF's driver data struct. Lifetime shortening
+        // from the PF's binding scope to `'_` is layout-compatible.
+        let data_ptr = unsafe {
+            let vfrd = ptr.cast::<VfRegistrationData<'_, F>>();
+            &raw const (*vfrd).data
+        };
+        // SAFETY: `data` is structurally pinned inside `VfRegistrationData`.
+        Ok(unsafe { Pin::new_unchecked(&*data_ptr) })
+    }
+}
+
+/// Wrapper for VF registration data stored inside a [`VfRegistration`].
+///
+/// Stores a [`TypeId`] header (derived from `F`) followed by the pinned data,
+/// so that [`Device::vf_registration_data_with()`] can verify the type at
+/// runtime.
+#[repr(C)]
+#[pin_data]
+pub struct VfRegistrationData<'a, F: ForLt + 'static> {
+    type_id: TypeId,
+    #[pin]
+    data: F::Of<'a>,
+}
+
+impl<'a, F: ForLt + 'static> VfRegistrationData<'a, F> {
+    /// Pin-initializer for the registration data.
+    pub fn new(data: impl PinInit<F::Of<'a>, Error>) -> impl PinInit<Self, Error> {
+        try_pin_init!(Self {
+            type_id: TypeId::of::<F>(),
+            data <- data,
+        })
+    }
+}
+
+/// SR-IOV VF registration on a PF device.
+///
+/// Owns the SR-IOV enable/disable lifecycle and the registration data that VF
+/// drivers access via [`Device::vf_registration_data_with()`] and
+/// [`Device::vf_registration_data()`]. The data lives inline (no separate
+/// allocation) and is initialized via pin-init.
+///
+/// The constructor stores a pointer to the inline [`VfRegistrationData`] on
+/// `pci_dev.vf_registration_data_rust` and optionally calls
+/// `pci_enable_sriov()`. Drop always calls `pci_disable_sriov()` (which blocks
+/// until all VF `remove()` callbacks complete) before clearing the pointer and
+/// letting the data fields drop.
+///
+/// Fails if the device is not a PF or if a registration already exists.
+#[pin_data(PinnedDrop)]
+pub struct VfRegistration<'a, F: ForLt + 'static> {
+    pdev: &'a Device<device::Bound>,
+    #[pin]
+    inner: VfRegistrationData<'a, F>,
+    #[pin]
+    _pin: PhantomPinned,
+}
+
+impl<'a, F: ForLt + 'static> VfRegistration<'a, F>
+where
+    for<'b> F::Of<'b>: Send + Sync,
+{
+    /// Create a new VF registration.
+    ///
+    /// Returns a pin-initializer so the registration can be embedded directly
+    /// in the PF driver's bus device private data. Fails with [`EINVAL`] if
+    /// the device is not a PF, or with [`EBUSY`] if a registration already
+    /// exists. When `enable` is `true` and `nr_vfs > 0`,
+    /// `pci_enable_sriov()` is called after the data is pinned.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the containing struct's field ordering drops
+    /// this `VfRegistration` before any resources that the registration data
+    /// borrows. The caller must not `mem::forget()` the containing struct.
+    pub unsafe fn new<'core, D: PinInit<F::Of<'a>, Error> + 'a>(
+        pdev: &'a Device<device::Core<'core>>,
+        nr_vfs: u16,
+        enable: bool,
+        data: D,
+    ) -> impl PinInit<Self, Error> + use<'a, 'core, F, D> {
+        pin_init::pin_init_scope(move || {
+            if !pdev.is_physfn() {
+                return Err(EINVAL);
+            }
+            if !pdev.vf_registration_data_rust().is_null() {
+                return Err(EBUSY);
+            }
+
+            Ok(try_pin_init!(Self {
+                pdev,
+                inner <- VfRegistrationData::new(data),
+                _pin: PhantomPinned,
+                _: {
+                    // Store the pointer to the pinned `VfRegistrationData`
+                    // on the PCI device so VF drivers can find it.
+                    pdev.set_vf_registration_data_rust(
+                        core::ptr::from_ref(inner.as_ref().get_ref()).cast_mut().cast(),
+                    );
+                    if enable && nr_vfs > 0 {
+                        // SAFETY: `pdev` is a valid PF device. On failure,
+                        // `PinnedDrop` clears the pointer.
+                        crate::error::to_result(unsafe {
+                            bindings::pci_enable_sriov(pdev.as_raw(), nr_vfs.into())
+                        })?;
+                    }
+                },
+            }))
+        })
+    }
+}
+
+// SAFETY: The inner data is `Send + Sync` (enforced by the where clause on
+// `new`), and `&Device` is `Send + Sync`.
+unsafe impl<F: ForLt> Send for VfRegistration<'_, F> where for<'a> F::Of<'a>: Send {}
+
+// SAFETY: `VfRegistration` doesn't expose mutable access; VF drivers only
+// read the data through an immutable pinned reference.
+unsafe impl<F: ForLt> Sync for VfRegistration<'_, F> where for<'a> F::Of<'a>: Send {}
+
+#[pinned_drop]
+impl<F: ForLt + 'static> PinnedDrop for VfRegistration<'_, F> {
+    fn drop(self: Pin<&mut Self>) {
+        // SAFETY: `pci_disable_sriov()` is safe to call on any `pci_dev`; it
+        // is a no-op if the device has no VFs enabled. When VFs are enabled,
+        // this blocks until all VF `remove()` callbacks complete.
+        unsafe { bindings::pci_disable_sriov(self.pdev.as_raw()) };
+
+        // After `pci_disable_sriov()` all VFs are gone, so no one can read
+        // the pointer anymore.
+        self.pdev
+            .set_vf_registration_data_rust(core::ptr::null_mut());
+
+        // The pinned `inner` field is dropped automatically after this returns.
     }
 }
 

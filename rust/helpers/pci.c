@@ -48,6 +48,29 @@ rust_helper_pci_sriov_get_totalvfs(struct pci_dev *pdev)
 }
 #endif
 
+__rust_helper bool rust_helper_pci_dev_is_virtfn(const struct pci_dev *pdev)
+{
+#ifdef CONFIG_PCI_IOV
+	return pdev->is_virtfn;
+#else
+	return false;
+#endif
+}
+
+__rust_helper bool rust_helper_pci_dev_is_physfn(const struct pci_dev *pdev)
+{
+#ifdef CONFIG_PCI_IOV
+	return pdev->is_physfn;
+#else
+	return false;
+#endif
+}
+
+__rust_helper struct pci_dev *rust_helper_pci_physfn(struct pci_dev *pdev)
+{
+	return pci_physfn(pdev);
+}
+
 #ifndef CONFIG_PCI_MSI
 __rust_helper int rust_helper_pci_alloc_irq_vectors(struct pci_dev *dev,
 						    unsigned int min_vecs,
