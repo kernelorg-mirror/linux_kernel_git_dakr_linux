@@ -339,6 +339,7 @@ struct pcie_link_state;
 struct pci_sriov;
 struct pci_p2pdma;
 struct rcec_ea;
+struct vfio_pci_core_device;
 
 /* struct pci_dev - describes a PCI device
  *
@@ -587,6 +588,11 @@ struct pci_dev {
 	phys_addr_t	rom;		/* Physical address if not from BAR */
 	size_t		romlen;		/* Length if not from BAR */
 	unsigned long	priv_flags;	/* Private flags for the PCI driver */
+
+#if IS_ENABLED(CONFIG_VFIO_PCI_CORE)
+	/* Set by VFIO PCI core registration; cleared after callback teardown. */
+	struct vfio_pci_core_device *vfio_pci_core;
+#endif
 
 	/* These methods index pci_reset_fn_methods[] */
 	u8 reset_methods[PCI_NUM_RESET_METHODS]; /* In priority order */

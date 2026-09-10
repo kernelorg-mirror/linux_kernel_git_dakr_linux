@@ -164,7 +164,7 @@ static inline void vfio_pci_core_debugfs_init(struct vfio_pci_core_device *vdev)
  */
 static unsigned int vfio_pci_set_decode(struct pci_dev *pdev, bool single_vga)
 {
-	struct vfio_pci_core_device *vdev = dev_get_drvdata(&pdev->dev);
+	struct vfio_pci_core_device *vdev = pdev->vfio_pci_core;
 	struct pci_dev *tmp = NULL;
 	unsigned char max_busnr;
 	unsigned int decodes;
@@ -490,7 +490,7 @@ static int vfio_pci_core_pm_exit(struct vfio_pci_core_device *vdev, u32 flags,
 #ifdef CONFIG_PM
 static int vfio_pci_core_runtime_suspend(struct device *dev)
 {
-	struct vfio_pci_core_device *vdev = dev_get_drvdata(dev);
+	struct vfio_pci_core_device *vdev = to_pci_dev(dev)->vfio_pci_core;
 
 	down_write(&vdev->memory_lock);
 	/*
@@ -519,7 +519,7 @@ static int vfio_pci_core_runtime_suspend(struct device *dev)
 
 static int vfio_pci_core_runtime_resume(struct device *dev)
 {
-	struct vfio_pci_core_device *vdev = dev_get_drvdata(dev);
+	struct vfio_pci_core_device *vdev = to_pci_dev(dev)->vfio_pci_core;
 
 	/*
 	 * Resume with a pm_wake_eventfd_ctx signals the eventfd and exit
@@ -2221,9 +2221,8 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	/* Drivers must set the vfio_pci_core_device to their drvdata */
-	if (WARN_ON(vdev != dev_get_drvdata(dev)))
-		return -EINVAL;
+	if (WARN_ON(pdev->vfio_pci_core))
+		return -EBUSY;
 
 	/* Drivers must set a name.  Required for sequestering SR-IOV VFs */
 	if (WARN_ON(!vdev->vdev.ops->name))
@@ -2272,9 +2271,12 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 
 	if (ret)
 		return ret;
+
+	/* Publish before registering VGA callbacks or enabling runtime PM. */
+	pdev->vfio_pci_core = vdev;
 	ret = vfio_pci_vf_init(vdev);
 	if (ret)
-		return ret;
+		goto out_clear;
 	ret = vfio_pci_vga_init(vdev);
 	if (ret)
 		goto out_vf;
@@ -2313,6 +2315,8 @@ out_power:
 	vfio_pci_vga_uninit(vdev);
 out_vf:
 	vfio_pci_vf_uninit(vdev);
+out_clear:
+	pdev->vfio_pci_core = NULL;
 	return ret;
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_register_device);
@@ -2330,13 +2334,14 @@ void vfio_pci_core_unregister_device(struct vfio_pci_core_device *vdev)
 		pm_runtime_get_noresume(&vdev->pdev->dev);
 
 	pm_runtime_forbid(&vdev->pdev->dev);
+	vdev->pdev->vfio_pci_core = NULL;
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_unregister_device);
 
 pci_ers_result_t vfio_pci_core_aer_err_detected(struct pci_dev *pdev,
 						pci_channel_state_t state)
 {
-	struct vfio_pci_core_device *vdev = dev_get_drvdata(&pdev->dev);
+	struct vfio_pci_core_device *vdev = pdev->vfio_pci_core;
 	struct vfio_pci_eventfd *eventfd;
 
 	rcu_read_lock();
