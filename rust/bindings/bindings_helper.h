@@ -92,6 +92,13 @@
 #include <linux/task_work.h>
 #include <linux/tracepoint.h>
 #include <linux/usb.h>
+#if IS_ENABLED(CONFIG_VFIO)
+#include <linux/vfio.h>
+#endif
+#if IS_ENABLED(CONFIG_VFIO_PCI_CORE)
+#include <linux/vfio_pci_core.h>
+#endif
+#include <uapi/linux/vfio.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
@@ -164,6 +171,10 @@ const unsigned long RUST_CONST_HELPER_GPU_BUDDY_CONTIGUOUS_ALLOCATION =
 const unsigned long RUST_CONST_HELPER_GPU_BUDDY_CLEAR_ALLOCATION = GPU_BUDDY_CLEAR_ALLOCATION;
 const unsigned long RUST_CONST_HELPER_GPU_BUDDY_CLEARED = GPU_BUDDY_CLEARED;
 const unsigned long RUST_CONST_HELPER_GPU_BUDDY_TRIM_DISABLE = GPU_BUDDY_TRIM_DISABLE;
+#endif
+
+#if IS_ENABLED(CONFIG_VFIO_PCI_CORE)
+const unsigned int RUST_CONST_HELPER_VFIO_DEVICE_RESET = VFIO_DEVICE_RESET;
 #endif
 
 #if IS_ENABLED(CONFIG_ANDROID_BINDER_IPC_RUST)
