@@ -22,7 +22,8 @@ use crate::{
     gpu::{
         Gpu,
         BAR0_SIZE, //
-    }, //
+    },
+    vgpu_api::NovaCoreVfApi, //
 };
 
 /// Counter for generating unique auxiliary device IDs.
@@ -33,6 +34,18 @@ pub(crate) struct NovaCore<'bound> {
     #[allow(clippy::type_complexity)]
     #[not_covariant]
     _reg: auxiliary::Registration<'gpu, ForLt!(NovaCoreApi<'_>)>,
+    /// VF registration data for the VFIO variant driver.
+    ///
+    /// Provides the [`NovaCoreVfApi`] to VF drivers through the PCI
+    /// VF registration data mechanism. On PF devices, `pci_enable_sriov()`
+    /// is called after the data is pinned; `pci_disable_sriov()` is called
+    /// in drop (before `gpu` is dropped) to ensure all VF drivers are
+    /// removed before the GPU resources they reference are freed.
+    ///
+    /// On non-PF devices this is a no-op (data initialized but not exposed).
+    #[not_covariant]
+    #[pin]
+    _vf_reg: pci::VfRegistration<'gpu, ForLt!(NovaCoreVfApi<'_>)>,
     #[pin]
     pub(crate) gpu: Gpu<'bound>,
     _enable: pci::DeviceEnableGuard<'bound>,
@@ -94,6 +107,18 @@ impl pci::Driver for NovaCoreDriver {
                         crate::MODULE_NAME,
                         NovaCoreApi { gpu: gpu.get_ref(), pdev },
                     )?
+                },
+                // SAFETY: `NovaCore` is dropped when the device is unbound;
+                // i.e. `mem::forget()` is never called on it. Field ordering
+                // ensures `_vf_reg` is dropped before `gpu`.
+                _vf_reg <- unsafe {
+                    let total_vfs = pdev.sriov_get_totalvfs().map_or(0, |v| v.get());
+                    pci::VfRegistration::new(
+                        pdev,
+                        total_vfs,
+                        total_vfs > 0,
+                        Ok(NovaCoreVfApi { _gpu: gpu.get_ref(), pdev }),
+                    )
                 },
                 _enable: enable,
             }))

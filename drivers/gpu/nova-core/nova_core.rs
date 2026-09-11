@@ -25,6 +25,7 @@ mod regs;
 mod sbuffer;
 mod vbios;
 mod vgpu;
+pub mod vgpu_api;
 
 pub(crate) const MODULE_NAME: &core::ffi::CStr = <LocalModule as kernel::ModuleMetadata>::NAME;
 
