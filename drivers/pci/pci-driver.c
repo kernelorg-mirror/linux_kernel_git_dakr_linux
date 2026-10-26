@@ -1749,6 +1749,7 @@ static const struct cpumask *pci_device_irq_get_affinity(struct device *dev,
 
 const struct bus_type pci_bus_type = {
 	.name		= "pci",
+	.hotpluggable	= true,
 	.driver_override = true,
 	.match		= pci_bus_match,
 	.uevent		= pci_uevent,

@@ -3007,6 +3007,7 @@ static int hid_uevent(const struct device *dev, struct kobj_uevent_env *env)
 
 const struct bus_type hid_bus_type = {
 	.name		= "hid",
+	.hotpluggable	= true,
 	.dev_groups	= hid_dev_groups,
 	.drv_groups	= hid_drv_groups,
 	.match		= hid_bus_match,

@@ -219,6 +219,7 @@ static const struct dev_pm_ops mmc_bus_pm_ops = {
 
 static const struct bus_type mmc_bus_type = {
 	.name		= "mmc",
+	.hotpluggable	= true,
 	.dev_groups	= mmc_dev_groups,
 	.uevent		= mmc_bus_uevent,
 	.probe		= mmc_bus_probe,

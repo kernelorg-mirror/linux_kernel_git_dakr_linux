@@ -169,6 +169,7 @@ static int w1_uevent(const struct device *dev, struct kobj_uevent_env *env);
 
 static const struct bus_type w1_bus_type = {
 	.name = "w1",
+	.hotpluggable = true,
 	.uevent = w1_uevent,
 };
 

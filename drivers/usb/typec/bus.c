@@ -563,6 +563,7 @@ static void typec_remove(struct device *dev)
 
 const struct bus_type typec_bus = {
 	.name = "typec",
+	.hotpluggable = true,
 	.dev_groups = typec_groups,
 	.match = typec_match,
 	.uevent = typec_uevent,

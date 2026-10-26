@@ -184,6 +184,7 @@ static void gbphy_dev_remove(struct device *dev)
 
 static const struct bus_type gbphy_bus_type = {
 	.name =		"gbphy",
+	.hotpluggable =	true,
 	.match =	gbphy_dev_match,
 	.probe =	gbphy_dev_probe,
 	.remove =	gbphy_dev_remove,

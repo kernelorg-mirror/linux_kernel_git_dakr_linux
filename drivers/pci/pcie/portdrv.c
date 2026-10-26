@@ -574,6 +574,7 @@ static void pcie_port_bus_remove(struct device *dev)
 
 const struct bus_type pcie_port_bus_type = {
 	.name = "pci_express",
+	.hotpluggable = true,
 	.match = pcie_port_bus_match,
 	.probe = pcie_port_bus_probe,
 	.remove = pcie_port_bus_remove,

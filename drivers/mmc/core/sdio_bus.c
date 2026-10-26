@@ -252,6 +252,7 @@ static const struct dev_pm_ops sdio_bus_pm_ops = {
 
 static const struct bus_type sdio_bus_type = {
 	.name		= "sdio",
+	.hotpluggable	= true,
 	.dev_groups	= sdio_dev_groups,
 	.match		= sdio_bus_match,
 	.uevent		= sdio_bus_uevent,

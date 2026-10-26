@@ -592,6 +592,7 @@ static void scsi_bus_shutdown(struct device *dev)
 
 const struct bus_type scsi_bus_type = {
 	.name		= "scsi",
+	.hotpluggable	= true,
 	.match		= scsi_bus_match,
 	.uevent		= scsi_bus_uevent,
 	.probe		= scsi_bus_probe,

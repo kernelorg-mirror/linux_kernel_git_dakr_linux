@@ -288,6 +288,7 @@ static void greybus_remove(struct device *dev)
 
 const struct bus_type greybus_bus_type = {
 	.name =		"greybus",
+	.hotpluggable =	true,
 	.match =	greybus_match_device,
 	.uevent =	greybus_uevent,
 	.probe =	greybus_probe,

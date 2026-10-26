@@ -165,6 +165,7 @@ ATTRIBUTE_GROUPS(memstick_dev);
 
 static const struct bus_type memstick_bus_type = {
 	.name           = "memstick",
+	.hotpluggable	= true,
 	.dev_groups	= memstick_dev_groups,
 	.match          = memstick_bus_match,
 	.uevent         = memstick_uevent,

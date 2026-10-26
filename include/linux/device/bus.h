@@ -65,6 +65,10 @@ struct fwnode_handle;
  *			this bus.
  * @pm:		Power management operations of this bus, callback the specific
  *		device driver's pm-ops.
+ * @hotpluggable:	Set to true if this bus inherently supports device
+ *			hotplug (e.g. USB, PCI hotplug, Thunderbolt, FireWire).
+ *			On hotpluggable buses, manual bind/unbind via sysfs is
+ *			a normal operation and will not taint the kernel.
  * @driver_override:	Set to true if this bus supports the driver_override
  *			mechanism, which allows userspace to force a specific
  *			driver to bind to a device via a sysfs attribute.
@@ -109,6 +113,7 @@ struct bus_type {
 
 	const struct dev_pm_ops *pm;
 
+	bool hotpluggable;
 	bool driver_override;
 	bool need_parent_lock;
 };

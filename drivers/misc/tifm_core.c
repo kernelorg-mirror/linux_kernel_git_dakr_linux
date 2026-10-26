@@ -150,6 +150,7 @@ ATTRIBUTE_GROUPS(tifm_dev);
 
 static const struct bus_type tifm_bus_type = {
 	.name      = "tifm",
+	.hotpluggable = true,
 	.dev_groups = tifm_dev_groups,
 	.match     = tifm_bus_match,
 	.uevent    = tifm_uevent,

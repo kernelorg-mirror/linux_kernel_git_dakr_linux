@@ -145,6 +145,7 @@ static void free_dynids(struct usb_serial_driver *drv)
 
 const struct bus_type usb_serial_bus_type = {
 	.name =		"usb-serial",
+	.hotpluggable =	true,
 	.match =	usb_serial_device_match,
 	.probe =	usb_serial_device_probe,
 	.remove =	usb_serial_device_remove,

@@ -1408,6 +1408,7 @@ static const struct dev_pm_ops pcmcia_bus_pm_ops = {
 
 const struct bus_type pcmcia_bus_type = {
 	.name = "pcmcia",
+	.hotpluggable = true,
 	.uevent = pcmcia_bus_uevent,
 	.match = pcmcia_bus_match,
 	.dev_groups = pcmcia_dev_groups,

@@ -308,6 +308,7 @@ static const struct attribute_group *domain_attr_groups[] = {
 
 const struct bus_type tb_bus_type = {
 	.name = "thunderbolt",
+	.hotpluggable = true,
 	.match = tb_service_match,
 	.probe = tb_service_probe,
 	.remove = tb_service_remove,

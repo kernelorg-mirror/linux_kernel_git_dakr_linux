@@ -1450,6 +1450,7 @@ static int mhi_match(struct device *dev, const struct device_driver *drv)
 
 const struct bus_type mhi_bus_type = {
 	.name = "mhi",
+	.hotpluggable = true,
 	.dev_name = "mhi",
 	.match = mhi_match,
 	.uevent = mhi_uevent,
